@@ -64,6 +64,21 @@ const WA_COLORS: Record<number, string> = {
 
 export default async function (app: FastifyInstance) {
 
+    // GET /channels/evolution-defaults — retorna URL padrão da Evolution configurada via env
+    // A API key nunca é exposta; apenas informa se está configurada.
+    app.get('/evolution-defaults', {
+        preHandler: requireAuth,
+        schema: {
+            tags: ['Channels'],
+            summary: 'Retorna configurações padrão da Evolution API (sem expor a key)',
+        },
+    }, async () => {
+        return {
+            evolutionUrl:   process.env.EVOLUTION_URL   ?? '',
+            hasDefaultKey:  !!process.env.EVOLUTION_API_KEY,
+        }
+    })
+
     // GET /channels?orgId=xxx — lista canais da organização
     app.get('/', {
         preHandler: requireAuth,
@@ -144,12 +159,14 @@ export default async function (app: FastifyInstance) {
         if (body.type === 'api') {
             config = { apiKey: crypto.randomBytes(24).toString('hex') }
         } else if (body.type === 'whatsapp') {
-            if (!body.evolutionUrl || !body.evolutionApiKey) {
-                return reply.status(400).send({ error: 'evolutionUrl e evolutionApiKey são obrigatórios.' })
+            const evolutionUrl    = body.evolutionUrl    || process.env.EVOLUTION_URL    || ''
+            const evolutionApiKey = body.evolutionApiKey || process.env.EVOLUTION_API_KEY || ''
+            if (!evolutionUrl || !evolutionApiKey) {
+                return reply.status(400).send({ error: 'evolutionUrl e evolutionApiKey são obrigatórios (ou configure EVOLUTION_URL e EVOLUTION_API_KEY no servidor).' })
             }
             config = {
-                evolutionUrl: body.evolutionUrl,
-                evolutionApiKey: body.evolutionApiKey,
+                evolutionUrl,
+                evolutionApiKey,
                 // instanceName gerado automaticamente: slug(nome) + 8 chars hex
                 instanceName: generateInstanceName(body.name),
             }
