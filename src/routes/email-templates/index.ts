@@ -1,6 +1,6 @@
 import type { FastifyInstance } from 'fastify'
 import { prisma } from '../../lib/prisma.js'
-import { requireAuth } from '../../lib/auth.js'
+import { requireAuth } from '../../lib/session.js'
 
 // Tipos de template suportados e variáveis disponíveis para cada um
 export const TEMPLATE_TYPES = {
