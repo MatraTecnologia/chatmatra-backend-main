@@ -13,6 +13,10 @@ async function resolveTemplate(
     defaultSubject: string,
     defaultHtml: string,
 ): Promise<{ subject: string; html: string }> {
+    let html = defaultHtml
+    let subject = defaultSubject
+
+    // Tenta buscar template customizado da organização
     if (userId) {
         const member = await prisma.member.findFirst({ where: { userId }, orderBy: { createdAt: 'asc' } })
         if (member) {
@@ -20,17 +24,19 @@ async function resolveTemplate(
                 where: { organizationId_type: { organizationId: member.organizationId, type } },
             })
             if (tpl) {
-                let html = tpl.html
-                let subject = tpl.subject
-                for (const [key, value] of Object.entries(vars)) {
-                    html    = html.replaceAll(key, value)
-                    subject = subject.replaceAll(key, value)
-                }
-                return { subject, html }
+                html = tpl.html
+                subject = tpl.subject
             }
         }
     }
-    return { subject: defaultSubject, html: defaultHtml }
+
+    // SEMPRE substitui as variáveis, mesmo nos templates padrão
+    for (const [key, value] of Object.entries(vars)) {
+        html    = html.replaceAll(key, value)
+        subject = subject.replaceAll(key, value)
+    }
+
+    return { subject, html }
 }
 
 export const auth = betterAuth({
