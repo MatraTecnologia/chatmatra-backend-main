@@ -1,8 +1,8 @@
 #!/bin/sh
 set -e
 
-echo "⏳ Rodando migrations do Prisma..."
-npx prisma migrate deploy
+echo "⏳ Sincronizando schema com o banco (db push)..."
+npx prisma db push
 
 echo "🚀 Iniciando servidor..."
 exec npx tsx src/server.ts
