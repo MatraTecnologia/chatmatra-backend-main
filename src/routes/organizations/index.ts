@@ -422,8 +422,10 @@ export default async function (app: FastifyInstance) {
             select: {
                 id: true,
                 role: true,
+                customRoleId: true,
                 createdAt: true,
-                user: { select: { id: true, name: true, email: true, image: true } },
+                user: { select: { id: true, name: true, email: true, image: true, emailVerified: true } },
+                customRole: { select: { id: true, name: true, color: true } },
             },
         })
     })
