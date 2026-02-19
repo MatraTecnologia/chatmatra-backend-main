@@ -355,7 +355,7 @@ export default async function (app: FastifyInstance) {
                     webhook: {
                         url: `${backendUrl}/channels/whatsapp/webhook`,
                         byEvents: false,
-                        base64: false,
+                        base64: true,
                         events: webhookEvents,
                     },
                 }),
@@ -369,7 +369,7 @@ export default async function (app: FastifyInstance) {
                 body: JSON.stringify({
                     url: `${backendUrl}/channels/whatsapp/webhook`,
                     webhook_by_events: false,
-                    webhook_base64: false,
+                    webhook_base64: true,
                     events: webhookEvents,
                 }),
             }).catch(() => null)
@@ -484,6 +484,56 @@ export default async function (app: FastifyInstance) {
         return reply.status(200).send({ ok: true, data: result.data })
     })
 
+    // GET /channels/:id/whatsapp/media/:messageId — busca base64 de mídia sob demanda
+    app.get('/:id/whatsapp/media/:messageId', {
+        preHandler: requireAuth,
+        schema: {
+            tags: ['Channels'],
+            summary: 'Busca base64 de mensagem de mídia via Evolution API',
+            params: { type: 'object', properties: { id: { type: 'string' }, messageId: { type: 'string' } } },
+        },
+    }, async (request, reply) => {
+        const { id, messageId } = request.params as { id: string; messageId: string }
+        const userId = request.session.user.id
+
+        const channel = await prisma.channel.findUnique({ where: { id } })
+        if (!channel || channel.type !== 'whatsapp') return reply.status(404).send({ error: 'Canal não encontrado.' })
+
+        const isMember = await prisma.member.findFirst({ where: { organizationId: channel.organizationId, userId } })
+        if (!isMember) return reply.status(403).send({ error: 'Sem permissão.' })
+
+        // Busca a mensagem para reconstruir a WA key
+        const message = await prisma.message.findUnique({
+            where: { id: messageId },
+            include: { contact: true },
+        })
+        if (!message || message.organizationId !== channel.organizationId) {
+            return reply.status(404).send({ error: 'Mensagem não encontrada.' })
+        }
+
+        const cfg = channel.config as WhatsAppConfig
+        const waKey = {
+            id:        message.externalId ?? '',
+            remoteJid: message.contact.externalId ?? '',
+            fromMe:    message.direction === 'outbound',
+        }
+
+        const result = await evolutionFetch(cfg, `/chat/getBase64FromMediaMessage/${cfg.instanceName}`, {
+            method: 'POST',
+            body: JSON.stringify({ key: waKey }),
+        })
+
+        if (!result.ok || !result.data?.base64) {
+            return reply.status(502).send({ error: 'Não foi possível obter a mídia.' })
+        }
+
+        return {
+            base64:    result.data.base64 as string,
+            mediaType: result.data.mediaType as string ?? message.type,
+            mimeType:  result.data.mimetype  as string ?? 'application/octet-stream',
+        }
+    })
+
     // POST /channels/whatsapp/webhook — recebe eventos da Evolution API
     // Configure a URL no painel da Evolution API: POST /channels/whatsapp/webhook
     app.post('/whatsapp/webhook', {
@@ -581,19 +631,26 @@ export default async function (app: FastifyInstance) {
             if (remoteJid.includes('@s.whatsapp.net') || remoteJid.includes('@c.us')) {
                 // eslint-disable-next-line @typescript-eslint/no-explicit-any
                 const msg = message as any
-                const content: string =
-                    msg?.conversation ||
-                    msg?.extendedTextMessage?.text ||
-                    msg?.imageMessage?.caption ||
-                    msg?.videoMessage?.caption ||
-                    (msg?.audioMessage   ? '[Áudio]'    : '') ||
-                    (msg?.stickerMessage ? '[Sticker]'  : '') ||
-                    (msg?.locationMessage ? '[Localização]' : '') ||
-                    (msg?.contactMessage  ? '[Contato]'   : '') ||
-                    (msg?.reactionMessage ? `[Reação: ${msg?.reactionMessage?.text ?? ''}]` : '') ||
-                    ''
 
-                if (content) {
+                // Detecta tipo de mídia
+                type MsgType = 'text' | 'image' | 'audio' | 'video' | 'document' | 'sticker'
+                let msgType: MsgType = 'text'
+                let content = ''
+
+                if (msg?.conversation)                     { content = msg.conversation;                      msgType = 'text' }
+                else if (msg?.extendedTextMessage?.text)   { content = msg.extendedTextMessage.text;           msgType = 'text' }
+                else if (msg?.imageMessage != null)        { content = msg.imageMessage?.caption ?? '';        msgType = 'image' }
+                else if (msg?.videoMessage != null)        { content = msg.videoMessage?.caption ?? '';        msgType = 'video' }
+                else if (msg?.audioMessage != null)        { content = '';                                     msgType = 'audio' }
+                else if (msg?.documentMessage != null)     { content = msg.documentMessage?.fileName ?? '';   msgType = 'document' }
+                else if (msg?.stickerMessage != null)      { content = '';                                     msgType = 'sticker' }
+                else if (msg?.locationMessage != null)     { content = '[Localização]';                        msgType = 'text' }
+                else if (msg?.contactMessage != null)      { content = '[Contato]';                            msgType = 'text' }
+                else if (msg?.reactionMessage != null)     { content = `[Reação: ${msg.reactionMessage?.text ?? ''}]`; msgType = 'text' }
+
+                const isMedia = ['image', 'audio', 'video', 'document', 'sticker'].includes(msgType)
+
+                if (content || isMedia) {
                     const direction = fromMe ? 'outbound' : 'inbound'
                     log.msg(`${direction === 'inbound' ? '←' : '→'} ${remoteJid}  "${content.slice(0, 60)}${content.length > 60 ? '…' : ''}"`)
 
@@ -624,7 +681,7 @@ export default async function (app: FastifyInstance) {
                             contactId:      contact.id,
                             channelId:      channel.id,
                             direction,
-                            type:      'text',
+                            type:      msgType,
                             content,
                             status:    'sent',
                             externalId: key.id,
@@ -643,7 +700,7 @@ export default async function (app: FastifyInstance) {
                         message: {
                             id:        savedMsg.id,
                             direction: direction as 'outbound' | 'inbound',
-                            type:      'text',
+                            type:      msgType,
                             content,
                             status:    'sent',
                             createdAt: savedMsg.createdAt.toISOString(),

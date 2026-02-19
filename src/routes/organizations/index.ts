@@ -420,13 +420,14 @@ export default async function (app: FastifyInstance) {
                 required: ['email'],
                 properties: {
                     email: { type: 'string' },
+                    name:  { type: 'string' },
                     role:  { type: 'string', enum: ['admin', 'agent', 'member'], default: 'agent' },
                 },
             },
         } as never,
     }, async (request, reply) => {
-        const { id }                  = request.params as { id: string }
-        const { email, role = 'agent' } = request.body as { email: string; role?: string }
+        const { id }                           = request.params as { id: string }
+        const { email, name, role = 'agent' }  = request.body as { email: string; name?: string; role?: string }
         const userId                  = request.session.user.id
 
         const requester = await prisma.member.findFirst({
@@ -477,7 +478,7 @@ export default async function (app: FastifyInstance) {
         // Cria via betterAuth para garantir hashing e verificação
         const signUpRes = await auth.api.signUpEmail({
             body: {
-                name:     cleanEmail.split('@')[0],
+                name:     name?.trim() || cleanEmail.split('@')[0],
                 email:    cleanEmail,
                 password: tempPassword,
             },
