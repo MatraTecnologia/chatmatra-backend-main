@@ -79,21 +79,21 @@ export default async function (app: FastifyInstance) {
         }
     })
 
-    // GET /channels?orgId=xxx — lista canais da organização
+    // GET /channels — lista canais da organização
     app.get('/', {
         preHandler: requireAuth,
         schema: {
             tags: ['Channels'],
             summary: 'Lista os canais da organização',
-            querystring: {
-                type: 'object',
-                required: ['orgId'],
-                properties: { orgId: { type: 'string' } },
-            },
         },
     }, async (request, reply) => {
-        const { orgId } = request.query as { orgId: string }
         const userId = request.session.user.id
+
+        // ─── MULTI-TENANT: Usa organizationId detectado automaticamente pelo requireAuth ───
+        const orgId = request.organizationId
+        if (!orgId) {
+            return reply.status(400).send({ error: 'Nenhuma organização detectada para este domínio.' })
+        }
 
         const isMember = await prisma.member.findFirst({ where: { organizationId: orgId, userId } })
         if (!isMember) return reply.status(403).send({ error: 'Sem permissão.' })
@@ -130,9 +130,8 @@ export default async function (app: FastifyInstance) {
             summary: 'Cria um novo canal',
             body: {
                 type: 'object',
-                required: ['orgId', 'name', 'type'],
+                required: ['name', 'type'],
                 properties: {
-                    orgId: { type: 'string' },
                     name: { type: 'string', minLength: 1 },
                     type: { type: 'string', enum: ['api', 'whatsapp'] },
                     // WhatsApp — instanceName gerado automaticamente no servidor
@@ -143,7 +142,6 @@ export default async function (app: FastifyInstance) {
         },
     }, async (request, reply) => {
         const body = request.body as {
-            orgId: string
             name: string
             type: 'api' | 'whatsapp'
             evolutionUrl?: string
@@ -151,7 +149,13 @@ export default async function (app: FastifyInstance) {
         }
         const userId = request.session.user.id
 
-        const isMember = await prisma.member.findFirst({ where: { organizationId: body.orgId, userId } })
+        // ─── MULTI-TENANT: Usa organizationId detectado automaticamente pelo requireAuth ───
+        const orgId = request.organizationId
+        if (!orgId) {
+            return reply.status(400).send({ error: 'Nenhuma organização detectada para este domínio.' })
+        }
+
+        const isMember = await prisma.member.findFirst({ where: { organizationId: orgId, userId } })
         if (!isMember) return reply.status(403).send({ error: 'Sem permissão.' })
 
         let config: Record<string, unknown> = {}
@@ -174,7 +178,7 @@ export default async function (app: FastifyInstance) {
 
         const channel = await prisma.channel.create({
             data: {
-                organizationId: body.orgId,
+                organizationId: orgId,
                 name: body.name,
                 type: body.type,
                 // Canais API não precisam de conexão externa — já nascem ativos.

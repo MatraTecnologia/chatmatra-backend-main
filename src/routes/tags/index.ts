@@ -128,15 +128,15 @@ export default async function (app: FastifyInstance) {
         schema: {
             tags: ['Tags'],
             summary: 'Lista tags da organização',
-            querystring: {
-                type: 'object',
-                required: ['orgId'],
-                properties: { orgId: { type: 'string' } },
-            },
         },
     }, async (request, reply) => {
-        const { orgId } = request.query as { orgId: string }
         const userId = request.session.user.id
+
+        // ─── MULTI-TENANT: Usa organizationId detectado automaticamente pelo requireAuth ───
+        const orgId = request.organizationId
+        if (!orgId) {
+            return reply.status(400).send({ error: 'Nenhuma organização detectada para este domínio.' })
+        }
 
         const isMember = await prisma.member.findFirst({ where: { organizationId: orgId, userId } })
         if (!isMember) return reply.status(403).send({ error: 'Sem permissão.' })
@@ -156,17 +156,22 @@ export default async function (app: FastifyInstance) {
             summary: 'Cria uma nova tag',
             body: {
                 type: 'object',
-                required: ['orgId', 'name'],
+                required: ['name'],
                 properties: {
-                    orgId: { type: 'string' },
                     name:  { type: 'string', minLength: 1 },
                     color: { type: 'string' },
                 },
             },
         },
     }, async (request, reply) => {
-        const { orgId, name, color } = request.body as { orgId: string; name: string; color?: string }
+        const { name, color } = request.body as { name: string; color?: string }
         const userId = request.session.user.id
+
+        // ─── MULTI-TENANT: Usa organizationId detectado automaticamente pelo requireAuth ───
+        const orgId = request.organizationId
+        if (!orgId) {
+            return reply.status(400).send({ error: 'Nenhuma organização detectada para este domínio.' })
+        }
 
         const isMember = await prisma.member.findFirst({ where: { organizationId: orgId, userId } })
         if (!isMember) return reply.status(403).send({ error: 'Sem permissão.' })
