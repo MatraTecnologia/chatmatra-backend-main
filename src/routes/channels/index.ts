@@ -511,26 +511,58 @@ export default async function (app: FastifyInstance) {
             return reply.status(404).send({ error: 'Mensagem não encontrada.' })
         }
 
+        // Valida se é mensagem de mídia
+        const mediaTypes = ['image', 'audio', 'video', 'document', 'sticker']
+        if (!mediaTypes.includes(message.type)) {
+            return reply.status(400).send({ error: 'Mensagem não é de mídia.' })
+        }
+
+        // Valida se tem externalId (key do WhatsApp)
+        if (!message.externalId || !message.contact.externalId) {
+            return reply.status(400).send({ error: 'Mensagem sem ID externo do WhatsApp.' })
+        }
+
         const cfg = channel.config as WhatsAppConfig
         const waKey = {
-            id:        message.externalId ?? '',
-            remoteJid: message.contact.externalId ?? '',
+            id:        message.externalId,
+            remoteJid: message.contact.externalId,
             fromMe:    message.direction === 'outbound',
         }
 
-        const result = await evolutionFetch(cfg, `/chat/getBase64FromMediaMessage/${cfg.instanceName}`, {
-            method: 'POST',
-            body: JSON.stringify({ key: waKey }),
-        })
+        try {
+            // Tenta buscar base64 da mídia via Evolution API
+            // Endpoint: POST /message/:instance/media/base64
+            const result = await evolutionFetch(cfg, `/message/${cfg.instanceName}/media/base64`, {
+                method: 'POST',
+                body: JSON.stringify({
+                    message: {
+                        key: waKey,
+                    },
+                    convertToMp4: false,
+                }),
+            })
 
-        if (!result.ok || !result.data?.base64) {
-            return reply.status(502).send({ error: 'Não foi possível obter a mídia.' })
-        }
+            if (!result.ok) {
+                log.error(`Evolution API erro ao buscar mídia: ${result.status} - ${JSON.stringify(result.data)}`)
+                return reply.status(502).send({
+                    error: 'Não foi possível obter a mídia da Evolution API.',
+                    details: result.data,
+                })
+            }
 
-        return {
-            base64:    result.data.base64 as string,
-            mediaType: result.data.mediaType as string ?? message.type,
-            mimeType:  result.data.mimetype  as string ?? 'application/octet-stream',
+            if (!result.data?.base64) {
+                log.error('Evolution API retornou sem base64')
+                return reply.status(502).send({ error: 'Mídia não disponível na Evolution API.' })
+            }
+
+            return {
+                base64:    result.data.base64 as string,
+                mediaType: result.data.mediaType as string ?? message.type,
+                mimeType:  result.data.mimetype  as string ?? 'application/octet-stream',
+            }
+        } catch (error) {
+            log.error(`Erro ao buscar mídia: ${error}`)
+            return reply.status(502).send({ error: 'Erro ao comunicar com Evolution API.' })
         }
     })
 
