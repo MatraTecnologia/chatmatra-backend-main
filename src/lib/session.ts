@@ -24,10 +24,36 @@ export async function requireAuth(request: FastifyRequest, reply: FastifyReply) 
     request.session = session
 
     // ─── MULTI-TENANT: Detecta organização pelo domínio da requisição ────────────
-    let hostname =
-        request.headers['x-forwarded-host'] ||
-        request.headers['host'] ||
-        request.hostname
+    // Em multi-tenant com API separada, o frontend faz requests para api.X.com
+    // mas precisamos detectar o tenant baseado no Origin/Referer do frontend
+
+    let hostname: string | undefined
+
+    // Prioridade 1: Origin header (domínio do frontend que está fazendo a request)
+    const origin = request.headers['origin']
+    if (origin) {
+        try {
+            const url = new URL(origin)
+            hostname = url.hostname
+        } catch {
+            // Origin inválida, ignora
+        }
+    }
+
+    // Prioridade 2: x-forwarded-host (proxy)
+    if (!hostname) {
+        hostname = request.headers['x-forwarded-host'] as string | undefined
+    }
+
+    // Prioridade 3: Host header (pode ser o domínio da API)
+    if (!hostname) {
+        hostname = request.headers['host'] as string | undefined
+    }
+
+    // Prioridade 4: request.hostname
+    if (!hostname) {
+        hostname = request.hostname
+    }
 
     // Garante que hostname é string (pode vir como array em alguns casos)
     if (Array.isArray(hostname)) {
