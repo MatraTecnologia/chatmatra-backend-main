@@ -160,7 +160,7 @@ model Message {
   contactId      String
   channelId      String?
   direction      String   @default("outbound") // 'outbound' | 'inbound'
-  type           String   @default("text")     // 'text' | 'note'
+  type           String   @default("text")     // 'text' | 'note' | 'image' | 'audio' | 'video' | 'document' | 'sticker'
   content        String
   status         String   @default("sent")     // 'sent' | 'error' | 'delivered' | 'read'
   externalId     String?  // ID da mensagem na Evolution API

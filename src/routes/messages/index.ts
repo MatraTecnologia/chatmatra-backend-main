@@ -116,7 +116,7 @@ export default async function (app: FastifyInstance) {
                     contactId:  { type: 'string' },
                     channelId:  { type: 'string' },
                     direction:  { type: 'string', enum: ['outbound', 'inbound'] },
-                    type:       { type: 'string', enum: ['text', 'note'] },
+                    type:       { type: 'string', enum: ['text', 'note', 'image', 'audio', 'video', 'document', 'sticker'] },
                     content:    { type: 'string', minLength: 1 },
                     status:     { type: 'string' },
                     externalId: { type: 'string' },
@@ -133,7 +133,7 @@ export default async function (app: FastifyInstance) {
             contactId: string
             channelId?: string
             direction: 'outbound' | 'inbound'
-            type: 'text' | 'note'
+            type: 'text' | 'note' | 'image' | 'audio' | 'video' | 'document' | 'sticker'
             content: string
             status?: string
             externalId?: string

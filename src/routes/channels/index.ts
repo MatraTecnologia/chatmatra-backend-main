@@ -1232,16 +1232,22 @@ export default async function (app: FastifyInstance) {
             for (const msg of msgs) {
                 if (!msg.key?.id) continue
                 const fromMe = msg.key.fromMe ?? false
-                const content =
-                    msg.message?.conversation ||
-                    msg.message?.extendedTextMessage?.text ||
-                    msg.message?.imageMessage?.caption ||
-                    msg.message?.videoMessage?.caption ||
-                    msg.message?.documentMessage?.caption ||
-                    (msg.message?.audioMessage ? '[Áudio]' : null) ||
-                    (msg.message?.stickerMessage ? '[Figurinha]' : null) ||
-                    ''
-                if (!content) continue
+
+                // Detecta tipo de mídia
+                type MsgType = 'text' | 'image' | 'audio' | 'video' | 'document' | 'sticker'
+                let msgType: MsgType = 'text'
+                let content = ''
+
+                if (msg.message?.conversation)                     { content = msg.message.conversation;                      msgType = 'text' }
+                else if (msg.message?.extendedTextMessage?.text)   { content = msg.message.extendedTextMessage.text;           msgType = 'text' }
+                else if (msg.message?.imageMessage != null)        { content = msg.message.imageMessage?.caption ?? '';        msgType = 'image' }
+                else if (msg.message?.videoMessage != null)        { content = msg.message.videoMessage?.caption ?? '';        msgType = 'video' }
+                else if (msg.message?.audioMessage != null)        { content = '';                                             msgType = 'audio' }
+                else if (msg.message?.documentMessage != null)     { content = msg.message.documentMessage?.caption ?? '';     msgType = 'document' }
+                else if (msg.message?.stickerMessage != null)      { content = '';                                             msgType = 'sticker' }
+
+                const isMedia = ['image', 'audio', 'video', 'document', 'sticker'].includes(msgType)
+                if (!content && !isMedia) continue
 
                 const createdAt = msg.messageTimestamp
                     ? new Date(msg.messageTimestamp * 1000)
@@ -1258,7 +1264,7 @@ export default async function (app: FastifyInstance) {
                             contactId:      contact.id,
                             channelId:      channel.id,
                             direction:      fromMe ? 'outbound' : 'inbound',
-                            type:           'text',
+                            type:           msgType,
                             content,
                             status:         'sent',
                             externalId:     msg.key.id,
