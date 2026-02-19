@@ -200,7 +200,39 @@ export default async function (app: FastifyInstance) {
         return reply.status(201).send(org)
     })
 
-    // GET /organizations/:id - detalhes de uma organização
+    // GET /organizations/current - detalhes da organização atual (baseado no domínio)
+    app.get('/current', {
+        preHandler: requireAuth,
+        schema: {
+            tags: ['Organizations'],
+            summary: 'Retorna os detalhes da organização atual (multi-tenant)',
+        },
+    }, async (request, reply) => {
+        // Usa organizationId injetado pelo requireAuth (baseado no domínio)
+        const orgId = request.organizationId
+        if (!orgId) {
+            return reply.status(400).send({ error: 'Nenhuma organização detectada para este domínio.' })
+        }
+
+        const org = await prisma.organization.findUnique({
+            where: { id: orgId },
+            include: {
+                members: {
+                    select: {
+                        id: true,
+                        role: true,
+                        user: { select: { id: true, name: true, email: true, image: true } },
+                    },
+                },
+            },
+        })
+
+        if (!org) return reply.status(404).send({ error: 'Organização não encontrada.' })
+
+        return org
+    })
+
+    // GET /organizations/:id - detalhes de uma organização (DEPRECATED: use /current em multi-tenant)
     app.get('/:id', {
         preHandler: requireAuth,
         schema: {
@@ -213,8 +245,13 @@ export default async function (app: FastifyInstance) {
         },
     }, async (request, reply) => {
         const { id } = request.params as { id: string }
-        const userId = request.session.user.id
 
+        // MULTI-TENANT: Valida que o ID corresponde à organização do domínio
+        if (request.organizationId && id !== request.organizationId) {
+            return reply.status(403).send({ error: 'Acesso negado a esta organização.' })
+        }
+
+        const userId = request.session.user.id
         const org = await prisma.organization.findFirst({
             where: { id, members: { some: { userId } } },
             include: {
@@ -233,7 +270,57 @@ export default async function (app: FastifyInstance) {
         return org
     })
 
-    // PATCH /organizations/:id - atualizar organização (owner/admin)
+    // PATCH /organizations/current - atualizar organização atual (multi-tenant)
+    app.patch('/current', {
+        preHandler: requireAuth,
+        schema: {
+            tags: ['Organizations'],
+            summary: 'Atualiza a organização atual (multi-tenant)',
+            body: {
+                type: 'object',
+                properties: {
+                    name:         { type: 'string' },
+                    logo:         { type: 'string' },
+                    domain:       { type: 'string' },
+                    fbAppId:      { type: 'string', nullable: true },
+                    fbAppSecret:  { type: 'string', nullable: true },
+                },
+            },
+        },
+    }, async (request, reply) => {
+        const orgId = request.organizationId
+        if (!orgId) {
+            return reply.status(400).send({ error: 'Nenhuma organização detectada para este domínio.' })
+        }
+
+        const userId = request.session.user.id
+        const member = await prisma.member.findFirst({
+            where: { organizationId: orgId, userId, role: { in: ['owner', 'admin'] } },
+        })
+
+        if (!member) return reply.status(403).send({ error: 'Sem permissão.' })
+
+        const { name, logo, domain, fbAppId, fbAppSecret } = request.body as {
+            name?: string
+            logo?: string
+            domain?: string
+            fbAppId?: string | null
+            fbAppSecret?: string | null
+        }
+
+        return prisma.organization.update({
+            where: { id: orgId },
+            data: {
+                ...(name        !== undefined && { name }),
+                ...(logo        !== undefined && { logo }),
+                ...(domain      !== undefined && { domain }),
+                ...(fbAppId     !== undefined && { fbAppId }),
+                ...(fbAppSecret !== undefined && { fbAppSecret }),
+            },
+        })
+    })
+
+    // PATCH /organizations/:id - atualizar organização (DEPRECATED: use /current em multi-tenant)
     app.patch('/:id', {
         preHandler: requireAuth,
         schema: {
@@ -255,8 +342,13 @@ export default async function (app: FastifyInstance) {
         },
     }, async (request, reply) => {
         const { id } = request.params as { id: string }
-        const userId = request.session.user.id
 
+        // MULTI-TENANT: Valida que o ID corresponde à organização do domínio
+        if (request.organizationId && id !== request.organizationId) {
+            return reply.status(403).send({ error: 'Acesso negado a esta organização.' })
+        }
+
+        const userId = request.session.user.id
         const member = await prisma.member.findFirst({
             where: { organizationId: id, userId, role: { in: ['owner', 'admin'] } },
         })
