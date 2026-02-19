@@ -1,0 +1,310 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Teste Widget MatraChat</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #f5f5f5; }
+
+        .page { max-width: 900px; margin: 0 auto; padding: 40px 20px; }
+
+        h1 { font-size: 28px; font-weight: 700; color: #111; }
+        h1 span { color: #6366f1; }
+
+        .card {
+            background: #fff;
+            border-radius: 16px;
+            border: 1px solid #e5e5e5;
+            padding: 28px;
+            margin-top: 28px;
+            box-shadow: 0 1px 4px rgba(0,0,0,.06);
+        }
+        .card h2 { font-size: 16px; font-weight: 600; margin-bottom: 6px; }
+        .card p  { font-size: 14px; color: #666; margin-bottom: 16px; line-height: 1.6; }
+
+        .field { margin-bottom: 14px; }
+        .field label { display: block; font-size: 12px; font-weight: 500; color: #555; margin-bottom: 4px; }
+        .field input {
+            width: 100%; padding: 9px 12px; border: 1px solid #ddd; border-radius: 8px;
+            font-size: 14px; outline: none; font-family: inherit;
+        }
+        .field input:focus { border-color: #6366f1; }
+        .field .hint { font-size: 11px; color: #999; margin-top: 3px; }
+
+        .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+
+        .btn {
+            background: #6366f1; color: #fff; border: none; border-radius: 8px;
+            padding: 10px 20px; font-size: 14px; font-weight: 600; cursor: pointer;
+            transition: opacity .15s; width: 100%;
+        }
+        .btn:hover { opacity: .88; }
+
+        .status {
+            margin-top: 14px; padding: 10px 14px; border-radius: 8px;
+            font-size: 13px; display: none;
+        }
+        .status.ok  { background: #f0fdf4; color: #166534; border: 1px solid #bbf7d0; }
+        .status.err { background: #fef2f2; color: #991b1b; border: 1px solid #fecaca; }
+        .status.info{ background: #eff6ff; color: #1e40af; border: 1px solid #bfdbfe; }
+
+        code {
+            font-family: 'Courier New', monospace; background: #f3f4f6;
+            padding: 2px 5px; border-radius: 4px; font-size: 12px;
+        }
+        pre {
+            background: #1e1e2e; color: #cdd6f4; padding: 16px; border-radius: 10px;
+            font-size: 12px; overflow-x: auto; font-family: 'Courier New', monospace;
+            line-height: 1.6; white-space: pre-wrap; word-break: break-all;
+        }
+
+        .steps { list-style: none; counter-reset: step; }
+        .steps li {
+            counter-increment: step;
+            padding: 10px 0 10px 40px; position: relative;
+            font-size: 14px; color: #444; border-bottom: 1px solid #f0f0f0;
+        }
+        .steps li:last-child { border-bottom: none; }
+        .steps li::before {
+            content: counter(step);
+            position: absolute; left: 0; top: 8px;
+            width: 24px; height: 24px; border-radius: 50%;
+            background: #6366f1; color: #fff;
+            font-size: 12px; font-weight: 700;
+            display: flex; align-items: center; justify-content: center;
+        }
+
+        .snippet-area {
+            background: #1e1e2e; color: #cdd6f4; padding: 16px; border-radius: 10px;
+            font-size: 12px; font-family: 'Courier New', monospace; line-height: 1.7;
+            white-space: pre; overflow-x: auto; margin-top: 12px;
+            border: 1px solid #313244;
+        }
+
+        #current-config {
+            margin-top: 12px; font-size: 12px; color: #888;
+            background: #f9f9fb; padding: 10px 14px; border-radius: 8px; border: 1px solid #e8e8ee;
+        }
+    </style>
+</head>
+<body>
+<div class="page">
+    <h1>Widget <span>MatraChat</span> — Página de Teste</h1>
+
+    <!-- ── Configuração do Widget ── -->
+    <div class="card">
+        <h2>1. Configurar e Carregar Widget</h2>
+        <p>
+            Preencha os dados abaixo para testar o widget. O <strong>API Key</strong> é a chave do seu canal API
+            criado no painel de canais. O botão flutuante aparecerá no canto inferior direito desta página.
+        </p>
+
+        <div class="field">
+            <label>API Key do canal</label>
+            <input type="text" id="api-key" placeholder="Cole aqui a api key do canal API..." />
+            <div class="hint">Encontre em Canais → seu canal API → ícone de engrenagem → aba "Instalar"</div>
+        </div>
+
+        <div class="grid2">
+            <div class="field">
+                <label>Backend URL</label>
+                <input type="text" id="api-base" value="http://localhost:3333" />
+            </div>
+            <div class="field">
+                <label>Cor principal</label>
+                <input type="color" id="color" value="#6366f1" style="height:38px;cursor:pointer;" />
+            </div>
+        </div>
+
+        <div class="grid2">
+            <div class="field">
+                <label>Nome do atendente</label>
+                <input type="text" id="agent-name" value="Suporte" />
+            </div>
+            <div class="field">
+                <label>Mensagem de boas-vindas</label>
+                <input type="text" id="welcome" value="Olá! Como posso ajudar?" />
+            </div>
+        </div>
+
+        <button class="btn" onclick="loadWidget()">Carregar Widget</button>
+
+        <div id="load-status" class="status"></div>
+
+        <div id="current-config" style="display:none;"></div>
+    </div>
+
+    <!-- ── Snippet gerado ── -->
+    <div class="card">
+        <h2>2. Snippet de Instalação</h2>
+        <p>Após preencher as configurações e clicar em "Carregar Widget", o snippet aparecerá aqui para você copiar e colar no seu site.</p>
+        <div id="snippet-box" class="snippet-area" style="color:#555;">
+            (preencha os campos acima e clique em "Carregar Widget")
+        </div>
+        <button class="btn" style="margin-top:12px;" onclick="copySnippet()">Copiar Snippet</button>
+    </div>
+
+    <!-- ── Como testar ── -->
+    <div class="card">
+        <h2>3. Fluxo de Teste</h2>
+        <ol class="steps">
+            <li>Clique no botão flutuante no canto inferior direito desta página</li>
+            <li>Preencha o formulário de nome e e-mail e clique em "Iniciar conversa"</li>
+            <li>Digite uma mensagem e envie</li>
+            <li>No painel admin (<code>localhost:3000</code>), vá em Conversas — o contato deve aparecer</li>
+            <li>Clique no contato e responda a mensagem pelo painel admin</li>
+            <li>A resposta deve aparecer <strong>em tempo real</strong> no widget desta página (via SSE)</li>
+            <li>Recarregue esta página — o widget deve pular o formulário e mostrar o histórico</li>
+        </ol>
+    </div>
+
+    <!-- ── Teste de endpoints ── -->
+    <div class="card">
+        <h2>4. Verificar Endpoints do Backend</h2>
+        <p>Clique nos botões abaixo para testar os endpoints da API do widget diretamente.</p>
+
+        <div style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:14px;">
+            <button class="btn" style="width:auto;padding:8px 14px;font-size:13px;" onclick="testEndpoint('config')">
+                GET /widget/config
+            </button>
+            <button class="btn" style="width:auto;padding:8px 14px;font-size:13px;background:#10b981;" onclick="testEndpoint('static')">
+                GET /static/widget.js
+            </button>
+            <button class="btn" style="width:auto;padding:8px 14px;font-size:13px;background:#f59e0b;" onclick="testEndpoint('cors')">
+                CORS preflight
+            </button>
+        </div>
+
+        <pre id="endpoint-result">(resultado aparecerá aqui)</pre>
+    </div>
+</div>
+
+<script>
+    let widgetLoaded = false
+
+    function showStatus(id, msg, type) {
+        const el = document.getElementById(id)
+        el.textContent = msg
+        el.className = 'status ' + type
+        el.style.display = 'block'
+    }
+
+    function getValues() {
+        return {
+            apiKey:    document.getElementById('api-key').value.trim(),
+            apiBase:   document.getElementById('api-base').value.trim().replace(/\/$/, ''),
+            color:     document.getElementById('color').value,
+            agentName: document.getElementById('agent-name').value.trim() || 'Suporte',
+            welcome:   document.getElementById('welcome').value.trim() || 'Olá! Como posso ajudar?',
+        }
+    }
+
+    function generateSnippet(v) {
+        return `<script
+  src="${v.apiBase}/static/widget.js"
+  data-api-key="${v.apiKey}"
+  data-primary-color="${v.color}"
+  data-agent-name="${v.agentName}"
+  data-welcome-text="${v.welcome}"
+  data-position="right"
+  data-api-base="${v.apiBase}"
+  defer
+><\/script>`
+    }
+
+    function loadWidget() {
+        const v = getValues()
+        if (!v.apiKey) {
+            showStatus('load-status', '⚠ Preencha a API Key do canal.', 'err')
+            return
+        }
+
+        // Remove widget anterior se existir
+        const prev = document.getElementById('mc-bubble')
+        if (prev) prev.remove()
+        const prevW = document.getElementById('mc-widget')
+        if (prevW) prevW.remove()
+        const prevStyles = document.querySelectorAll('style[data-mc]')
+        prevStyles.forEach(s => s.remove())
+        // Limpa localStorage
+        const storageKey = 'matrachat_v1_' + v.apiKey
+        localStorage.removeItem(storageKey)
+
+        // Remove script anterior
+        const prevScript = document.getElementById('mc-script')
+        if (prevScript) prevScript.remove()
+
+        const script = document.createElement('script')
+        script.id = 'mc-script'
+        script.src = `${v.apiBase}/static/widget.js`
+        script.setAttribute('data-api-key', v.apiKey)
+        script.setAttribute('data-primary-color', v.color)
+        script.setAttribute('data-agent-name', v.agentName)
+        script.setAttribute('data-welcome-text', v.welcome)
+        script.setAttribute('data-position', 'right')
+        script.setAttribute('data-api-base', v.apiBase)
+        script.defer = true
+
+        script.onload = () => {
+            showStatus('load-status', '✅ Widget carregado! O botão flutuante deve aparecer no canto inferior direito.', 'ok')
+            widgetLoaded = true
+
+            const cfg = document.getElementById('current-config')
+            cfg.style.display = 'block'
+            cfg.innerHTML = `<strong>Config ativa:</strong> key=${v.apiKey.slice(0,12)}… | cor=${v.color} | atendente="${v.agentName}"`
+        }
+        script.onerror = () => {
+            showStatus('load-status', `❌ Falha ao carregar widget.js de ${v.apiBase}/static/widget.js — verifique se o backend está rodando.`, 'err')
+        }
+
+        document.head.appendChild(script)
+
+        // Atualiza snippet
+        document.getElementById('snippet-box').textContent = generateSnippet(v)
+        showStatus('load-status', '⏳ Carregando widget...', 'info')
+    }
+
+    function copySnippet() {
+        const text = document.getElementById('snippet-box').textContent
+        if (text.startsWith('(')) { alert('Carregue o widget primeiro.'); return }
+        navigator.clipboard.writeText(text)
+            .then(() => alert('Snippet copiado!'))
+            .catch(() => alert('Erro ao copiar. Copie manualmente.'))
+    }
+
+    async function testEndpoint(type) {
+        const v = getValues()
+        const base = v.apiBase
+        const el = document.getElementById('endpoint-result')
+        el.textContent = 'Aguardando...'
+
+        try {
+            let res, text, headers = {}
+
+            if (type === 'config') {
+                if (!v.apiKey) { el.textContent = 'Preencha a API Key primeiro.'; return }
+                headers = { 'X-Widget-Key': v.apiKey }
+                res = await fetch(`${base}/widget/config`, { headers })
+                text = await res.text()
+                el.textContent = `GET ${base}/widget/config\nStatus: ${res.status}\n\n${JSON.stringify(JSON.parse(text), null, 2)}`
+            } else if (type === 'static') {
+                res = await fetch(`${base}/static/widget.js`)
+                const t = await res.text()
+                el.textContent = `GET ${base}/static/widget.js\nStatus: ${res.status}\nContent-Type: ${res.headers.get('content-type')}\n\n${t.slice(0, 300)}...\n\n[${t.length} bytes]`
+            } else if (type === 'cors') {
+                res = await fetch(`${base}/widget/config`, {
+                    method: 'OPTIONS',
+                    headers: { 'Origin': 'https://site-externo.com', 'Access-Control-Request-Method': 'GET' }
+                })
+                const acao = res.headers.get('access-control-allow-origin')
+                el.textContent = `OPTIONS ${base}/widget/config\nStatus: ${res.status}\nAccess-Control-Allow-Origin: ${acao}\n\n${acao === '*' ? '✅ CORS configurado corretamente' : '⚠ CORS pode não estar configurado'}`
+            }
+        } catch (err) {
+            el.textContent = `Erro: ${err.message}\n\nVerifique se o backend está rodando em ${base}`
+        }
+    }
+</script>
+</body>
+</html>
