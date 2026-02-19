@@ -65,10 +65,27 @@ export const auth = betterAuth({
             await sendEmail({ to: user.email, subject, html })
         },
     },
-    trustedOrigins: [
-        process.env.BETTER_AUTH_URL ?? 'http://localhost:3333',
-        process.env.FRONTEND_URL ?? 'http://localhost:3000',
-    ],
+    // Em multi-tenant, cada subdomínio (a.matratecnologia.com, b.matratecnologia.com)
+    // faz chamadas à API. A função recebe o Request e retorna a lista de origens
+    // confiáveis — se a origem da request bater com BASE_DOMAIN, é adicionada
+    // dinamicamente sem precisar listar cada tenant.
+    trustedOrigins: async (request) => {
+        const defaults = [
+            process.env.BETTER_AUTH_URL ?? 'http://localhost:3333',
+            process.env.FRONTEND_URL    ?? 'http://localhost:3000',
+        ]
+        const baseDomain = process.env.BASE_DOMAIN
+        const origin     = request?.headers?.get('origin')
+        if (origin && baseDomain) {
+            try {
+                const { hostname } = new URL(origin)
+                if (hostname === baseDomain || hostname.endsWith(`.${baseDomain}`)) {
+                    return [...defaults, origin]
+                }
+            } catch { /* origin inválida */ }
+        }
+        return defaults
+    },
     plugins: [
         organization({
             allowUserToCreateOrganization: true,
