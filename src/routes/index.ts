@@ -16,9 +16,11 @@ export default async function (app: FastifyInstance) {
             },
         },
     }, async () => {
+        const base = process.env.BASE_URL ?? `http://localhost:${process.env.PORT ?? 3333}`
         return {
-            message: 'Seja bem-vindo ao backend do Chat Matra! Para acessar a documentação, acesse /docs.',
-            docs: 'http://localhost:3333/docs',
+            message: '🚀 MatraChat API — online e pronta para uso.',
+            docs: `${base}/docs`,
+            version: '1.0.0',
         }
     })
 }
