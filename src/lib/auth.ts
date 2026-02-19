@@ -10,6 +10,14 @@ export const auth = betterAuth({
     database: prismaAdapter(prisma, {
         provider: 'postgresql',
     }),
+    advanced: {
+        // Seta o cookie no domínio pai (ex: .matratecnologia.com) para que
+        // tanto o frontend quanto o backend possam ler a sessão
+        crossSubDomainCookies: {
+            enabled: !!process.env.COOKIE_DOMAIN,
+            domain: process.env.COOKIE_DOMAIN,
+        },
+    },
     emailAndPassword: {
         enabled: true,
         requireEmailVerification: true,
