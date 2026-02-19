@@ -31,7 +31,7 @@ async function evolutionFetch(
 
 export default async function (app: FastifyInstance) {
 
-    // GET /contacts?orgId=&search=&page=&limit=
+    // GET /contacts?search=&page=&limit=
     app.get('/', {
         preHandler: requireAuth,
         schema: {
@@ -39,9 +39,7 @@ export default async function (app: FastifyInstance) {
             summary: 'Lista contatos da organização',
             querystring: {
                 type: 'object',
-                required: ['orgId'],
                 properties: {
-                    orgId:       { type: 'string' },
                     search:      { type: 'string' },
                     tagId:       { type: 'string' },
                     hasMessages: { type: 'boolean' },
@@ -51,8 +49,7 @@ export default async function (app: FastifyInstance) {
             },
         },
     }, async (request, reply) => {
-        const { orgId, search, tagId, hasMessages, page = 1, limit = 30 } = request.query as {
-            orgId: string
+        const { search, tagId, hasMessages, page = 1, limit = 30 } = request.query as {
             search?: string
             tagId?: string
             hasMessages?: boolean
@@ -60,6 +57,12 @@ export default async function (app: FastifyInstance) {
             limit?: number
         }
         const userId = request.session.user.id
+
+        // ─── MULTI-TENANT: Usa organizationId detectado automaticamente pelo requireAuth ───
+        const orgId = request.organizationId
+        if (!orgId) {
+            return reply.status(400).send({ error: 'Nenhuma organização detectada para este domínio.' })
+        }
 
         const isMember = await prisma.member.findFirst({ where: { organizationId: orgId, userId } })
         if (!isMember) return reply.status(403).send({ error: 'Sem permissão.' })
@@ -251,9 +254,8 @@ export default async function (app: FastifyInstance) {
             summary: 'Cria um novo contato',
             body: {
                 type: 'object',
-                required: ['orgId', 'name'],
+                required: ['name'],
                 properties: {
-                    orgId:      { type: 'string' },
                     name:       { type: 'string', minLength: 1 },
                     phone:      { type: 'string' },
                     email:      { type: 'string' },
@@ -266,7 +268,6 @@ export default async function (app: FastifyInstance) {
         },
     }, async (request, reply) => {
         const body = request.body as {
-            orgId: string
             name: string
             phone?: string
             email?: string
@@ -277,12 +278,18 @@ export default async function (app: FastifyInstance) {
         }
         const userId = request.session.user.id
 
-        const isMember = await prisma.member.findFirst({ where: { organizationId: body.orgId, userId } })
+        // ─── MULTI-TENANT: Usa organizationId detectado automaticamente pelo requireAuth ───
+        const orgId = request.organizationId
+        if (!orgId) {
+            return reply.status(400).send({ error: 'Nenhuma organização detectada para este domínio.' })
+        }
+
+        const isMember = await prisma.member.findFirst({ where: { organizationId: orgId, userId } })
         if (!isMember) return reply.status(403).send({ error: 'Sem permissão.' })
 
         const contact = await prisma.contact.create({
             data: {
-                organizationId: body.orgId,
+                organizationId: orgId,
                 name:       body.name,
                 phone:      body.phone,
                 email:      body.email,
@@ -357,17 +364,21 @@ export default async function (app: FastifyInstance) {
             params: { type: 'object', properties: { id: { type: 'string' } } },
             body: {
                 type: 'object',
-                required: ['orgId'],
                 properties: {
-                    orgId:        { type: 'string' },
                     assignedToId: { type: 'string', nullable: true },
                 },
             },
         },
     }, async (request, reply) => {
         const { id } = request.params as { id: string }
-        const { orgId, assignedToId } = request.body as { orgId: string; assignedToId: string | null }
+        const { assignedToId } = request.body as { assignedToId: string | null }
         const userId = request.session.user.id
+
+        // ─── MULTI-TENANT: Usa organizationId detectado automaticamente pelo requireAuth ───
+        const orgId = request.organizationId
+        if (!orgId) {
+            return reply.status(400).send({ error: 'Nenhuma organização detectada para este domínio.' })
+        }
 
         const isMember = await prisma.member.findFirst({ where: { organizationId: orgId, userId } })
         if (!isMember) return reply.status(403).send({ error: 'Sem permissão.' })
@@ -399,16 +410,16 @@ export default async function (app: FastifyInstance) {
             tags: ['Contacts'],
             summary: 'Resolve uma conversa (libera agente)',
             params: { type: 'object', properties: { id: { type: 'string' } } },
-            body: {
-                type: 'object',
-                required: ['orgId'],
-                properties: { orgId: { type: 'string' } },
-            },
         },
     }, async (request, reply) => {
         const { id } = request.params as { id: string }
-        const { orgId } = request.body as { orgId: string }
         const userId = request.session.user.id
+
+        // ─── MULTI-TENANT: Usa organizationId detectado automaticamente pelo requireAuth ───
+        const orgId = request.organizationId
+        if (!orgId) {
+            return reply.status(400).send({ error: 'Nenhuma organização detectada para este domínio.' })
+        }
 
         const isMember = await prisma.member.findFirst({ where: { organizationId: orgId, userId } })
         if (!isMember) return reply.status(403).send({ error: 'Sem permissão.' })
@@ -437,16 +448,16 @@ export default async function (app: FastifyInstance) {
             tags: ['Contacts'],
             summary: 'Marca conversa como aberta/em andamento',
             params: { type: 'object', properties: { id: { type: 'string' } } },
-            body: {
-                type: 'object',
-                required: ['orgId'],
-                properties: { orgId: { type: 'string' } },
-            },
         },
     }, async (request, reply) => {
         const { id } = request.params as { id: string }
-        const { orgId } = request.body as { orgId: string }
         const userId = request.session.user.id
+
+        // ─── MULTI-TENANT: Usa organizationId detectado automaticamente pelo requireAuth ───
+        const orgId = request.organizationId
+        if (!orgId) {
+            return reply.status(400).send({ error: 'Nenhuma organização detectada para este domínio.' })
+        }
 
         const isMember = await prisma.member.findFirst({ where: { organizationId: orgId, userId } })
         if (!isMember) return reply.status(403).send({ error: 'Sem permissão.' })
