@@ -44,21 +44,27 @@ export type AgentEvent =
           assignedToName: string | null
       }
 
-const subscribers = new Map<string, Set<(event: AgentEvent) => void>>()
+type SubscriberCallback = {
+    userId: string
+    callback: (event: AgentEvent) => void
+}
+
+const subscribers = new Map<string, Set<SubscriberCallback>>()
 
 /** Subscribe to all events for an org. Returns an unsubscribe function. */
-export function subscribeOrg(orgId: string, cb: (event: AgentEvent) => void): () => void {
+export function subscribeOrg(orgId: string, userId: string, cb: (event: AgentEvent) => void): () => void {
     if (!subscribers.has(orgId)) subscribers.set(orgId, new Set())
-    subscribers.get(orgId)!.add(cb)
+    const subscriber: SubscriberCallback = { userId, callback: cb }
+    subscribers.get(orgId)!.add(subscriber)
     return () => {
         const set = subscribers.get(orgId)
         if (!set) return
-        set.delete(cb)
+        set.delete(subscriber)
         if (set.size === 0) subscribers.delete(orgId)
     }
 }
 
 /** Publish an event to all active SSE connections for this org. */
 export function publishToOrg(orgId: string, event: AgentEvent): void {
-    subscribers.get(orgId)?.forEach((cb) => cb(event))
+    subscribers.get(orgId)?.forEach((subscriber) => subscriber.callback(event))
 }

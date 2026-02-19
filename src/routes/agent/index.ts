@@ -23,8 +23,16 @@ export default async function (app: FastifyInstance) {
 
         const userId = request.session.user.id
 
-        const isMember = await prisma.member.findFirst({ where: { organizationId: orgId, userId } })
-        if (!isMember) return reply.status(403).send({ error: 'Sem permissão.' })
+        const member = await prisma.member.findFirst({
+            where: { organizationId: orgId, userId },
+            select: {
+                notifyNewMessage: true,
+                notifyAssigned: true,
+                notifyMention: true,
+                notifyResolved: true,
+            },
+        })
+        if (!member) return reply.status(403).send({ error: 'Sem permissão.' })
 
         // reply.hijack() bypasses Fastify's onSend hooks (including @fastify/cors),
         // so we must add CORS headers manually here.
@@ -42,8 +50,27 @@ export default async function (app: FastifyInstance) {
         })
         reply.raw.write('event: connected\ndata: {}\n\n')
 
-        const unsubscribe = subscribeOrg(orgId, (event) => {
-            reply.raw.write(`event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`)
+        const unsubscribe = subscribeOrg(orgId, userId, (event) => {
+            // Filtrar eventos baseado nas configurações de notificação do membro
+            let shouldNotify = false
+
+            if (event.type === 'new_message') {
+                shouldNotify = member.notifyNewMessage
+            } else if (event.type === 'conv_updated') {
+                // Verificar se foi atribuído a este usuário
+                if (event.assignedToId === userId) {
+                    shouldNotify = member.notifyAssigned
+                }
+                // Verificar se foi resolvido
+                if (event.convStatus === 'resolved') {
+                    shouldNotify = shouldNotify || member.notifyResolved
+                }
+            }
+
+            // Só enviar o evento se o membro tiver a notificação ativa
+            if (shouldNotify) {
+                reply.raw.write(`event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`)
+            }
         })
 
         const heartbeat = setInterval(() => reply.raw.write(': ping\n\n'), 25_000)
