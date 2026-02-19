@@ -3,6 +3,16 @@ import { requireAuth } from '../../lib/session.js'
 import { prisma } from '../../lib/prisma.js'
 import { publish } from '../../lib/widgetSse.js'
 
+// ─── Helper: Substitui variáveis na assinatura ────────────────────────────────
+function applySignature(content: string, signature: string, user: { name: string; email: string; phone?: string | null }): string {
+    const processedSignature = signature
+        .replace(/\{\{name\}\}/g, user.name)
+        .replace(/\{\{email\}\}/g, user.email)
+        .replace(/\{\{phone\}\}/g, user.phone || user.email)
+
+    return `${content}\n\nassinatura:\n${processedSignature}`
+}
+
 export default async function (app: FastifyInstance) {
 
     // GET /messages?contactId=&orgId=&limit=&before=<ISO-date>
@@ -127,6 +137,23 @@ export default async function (app: FastifyInstance) {
         const isMember = await prisma.member.findFirst({ where: { organizationId: body.orgId, userId } })
         if (!isMember) return reply.status(403).send({ error: 'Sem permissão.' })
 
+        // ─── ASSINATURA AUTOMÁTICA: Adiciona assinatura se outbound + text + usuário tem assinatura configurada ───
+        let finalContent = body.content
+        if (body.direction === 'outbound' && body.type === 'text') {
+            const user = await prisma.user.findUnique({
+                where: { id: userId },
+                select: { signature: true, name: true, email: true, phone: true },
+            })
+
+            if (user?.signature) {
+                finalContent = applySignature(body.content, user.signature, {
+                    name: user.name,
+                    email: user.email,
+                    phone: user.phone,
+                })
+            }
+        }
+
         const message = await prisma.message.create({
             data: {
                 organizationId: body.orgId,
@@ -134,7 +161,7 @@ export default async function (app: FastifyInstance) {
                 channelId:      body.channelId,
                 direction:      body.direction,
                 type:           body.type,
-                content:        body.content,
+                content:        finalContent, // Usa finalContent que pode conter assinatura
                 status:         body.status ?? 'sent',
                 externalId:     body.externalId,
             },

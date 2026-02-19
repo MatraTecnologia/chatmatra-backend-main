@@ -17,13 +17,25 @@ export default async function (app: FastifyInstance) {
                         name: { type: 'string' },
                         email: { type: 'string' },
                         image: { type: 'string', nullable: true },
+                        signature: { type: 'string', nullable: true },
                         createdAt: { type: 'string' },
                     },
                 },
             },
         },
     }, async (request) => {
-        return request.session.user
+        const userId = request.session.user.id
+        return prisma.user.findUnique({
+            where: { id: userId },
+            select: {
+                id: true,
+                name: true,
+                email: true,
+                image: true,
+                signature: true,
+                createdAt: true,
+            },
+        })
     })
 
     // GET /users/me/validate-tenant?domain=teste.matratecnologia.com
@@ -115,5 +127,132 @@ export default async function (app: FastifyInstance) {
             data: { name, image },
             select: { id: true, name: true, email: true, image: true },
         })
+    })
+
+    // PATCH /users/me/signature - atualizar assinatura eletrônica
+    app.patch('/me/signature', {
+        preHandler: requireAuth,
+        schema: {
+            tags: ['Users'],
+            summary: 'Atualiza a assinatura eletrônica do usuário',
+            description: 'Assinatura suporta variáveis: {{name}}, {{email}}, {{phone}}',
+            body: {
+                type: 'object',
+                required: ['signature'],
+                properties: {
+                    signature: { type: 'string' },
+                },
+            },
+            response: {
+                200: {
+                    type: 'object',
+                    properties: {
+                        signature: { type: 'string', nullable: true },
+                    },
+                },
+            },
+        },
+    }, async (request) => {
+        const { signature } = request.body as { signature: string }
+        const userId = request.session.user.id
+
+        const updated = await prisma.user.update({
+            where: { id: userId },
+            data: { signature: signature || null },
+            select: { signature: true },
+        })
+
+        return updated
+    })
+
+    // GET /users/me/notifications - buscar configurações de notificação
+    app.get('/me/notifications', {
+        preHandler: requireAuth,
+        schema: {
+            tags: ['Users'],
+            summary: 'Retorna as configurações de notificação do membro na organização atual',
+        },
+    }, async (request, reply) => {
+        const orgId = request.organizationId
+        if (!orgId) {
+            return reply.status(400).send({ error: 'Nenhuma organização detectada para este domínio.' })
+        }
+
+        const userId = request.session.user.id
+
+        const member = await prisma.member.findFirst({
+            where: { organizationId: orgId, userId },
+            select: {
+                notifyNewMessage: true,
+                notifyAssigned: true,
+                notifyMention: true,
+                notifyResolved: true,
+            },
+        })
+
+        if (!member) {
+            return reply.status(404).send({ error: 'Membro não encontrado nesta organização.' })
+        }
+
+        return member
+    })
+
+    // PATCH /users/me/notifications - atualizar configurações de notificação
+    app.patch('/me/notifications', {
+        preHandler: requireAuth,
+        schema: {
+            tags: ['Users'],
+            summary: 'Atualiza as configurações de notificação do membro na organização atual',
+            body: {
+                type: 'object',
+                properties: {
+                    notifyNewMessage: { type: 'boolean' },
+                    notifyAssigned: { type: 'boolean' },
+                    notifyMention: { type: 'boolean' },
+                    notifyResolved: { type: 'boolean' },
+                },
+            },
+        },
+    }, async (request, reply) => {
+        const orgId = request.organizationId
+        if (!orgId) {
+            return reply.status(400).send({ error: 'Nenhuma organização detectada para este domínio.' })
+        }
+
+        const userId = request.session.user.id
+        const body = request.body as {
+            notifyNewMessage?: boolean
+            notifyAssigned?: boolean
+            notifyMention?: boolean
+            notifyResolved?: boolean
+        }
+
+        // Busca o member atual
+        const member = await prisma.member.findFirst({
+            where: { organizationId: orgId, userId },
+        })
+
+        if (!member) {
+            return reply.status(404).send({ error: 'Membro não encontrado nesta organização.' })
+        }
+
+        // Atualiza apenas os campos fornecidos
+        const updated = await prisma.member.update({
+            where: { id: member.id },
+            data: {
+                notifyNewMessage: body.notifyNewMessage,
+                notifyAssigned: body.notifyAssigned,
+                notifyMention: body.notifyMention,
+                notifyResolved: body.notifyResolved,
+            },
+            select: {
+                notifyNewMessage: true,
+                notifyAssigned: true,
+                notifyMention: true,
+                notifyResolved: true,
+            },
+        })
+
+        return updated
     })
 }
