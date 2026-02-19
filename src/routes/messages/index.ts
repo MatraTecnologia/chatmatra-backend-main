@@ -15,7 +15,7 @@ function applySignature(content: string, signature: string, user: { name: string
 
 export default async function (app: FastifyInstance) {
 
-    // GET /messages?contactId=&orgId=&limit=&before=<ISO-date>
+    // GET /messages?contactId=&limit=&before=<ISO-date>
     // Sem 'before' → retorna as mensagens mais recentes (limit)
     // Com 'before' → retorna mensagens anteriores à data informada
     // Legado: se 'page' for informado, usa paginação offset clássica
@@ -26,10 +26,9 @@ export default async function (app: FastifyInstance) {
             summary: 'Lista mensagens de um contato',
             querystring: {
                 type: 'object',
-                required: ['contactId', 'orgId'],
+                required: ['contactId'],
                 properties: {
                     contactId: { type: 'string' },
-                    orgId:     { type: 'string' },
                     page:      { type: 'integer', minimum: 1 },
                     limit:     { type: 'integer', minimum: 1, maximum: 200, default: 50 },
                     before:    { type: 'string' },
@@ -37,9 +36,13 @@ export default async function (app: FastifyInstance) {
             },
         },
     }, async (request, reply) => {
-        const { contactId, orgId, page, limit = 50, before } = request.query as {
+        const orgId = request.organizationId
+        if (!orgId) {
+            return reply.status(400).send({ error: 'Nenhuma organização detectada para este domínio.' })
+        }
+
+        const { contactId, page, limit = 50, before } = request.query as {
             contactId: string
-            orgId: string
             page?: number
             limit?: number
             before?: string
@@ -108,9 +111,8 @@ export default async function (app: FastifyInstance) {
             summary: 'Salva uma mensagem ou nota interna',
             body: {
                 type: 'object',
-                required: ['orgId', 'contactId', 'content', 'type', 'direction'],
+                required: ['contactId', 'content', 'type', 'direction'],
                 properties: {
-                    orgId:      { type: 'string' },
                     contactId:  { type: 'string' },
                     channelId:  { type: 'string' },
                     direction:  { type: 'string', enum: ['outbound', 'inbound'] },
@@ -122,8 +124,12 @@ export default async function (app: FastifyInstance) {
             },
         },
     }, async (request, reply) => {
+        const orgId = request.organizationId
+        if (!orgId) {
+            return reply.status(400).send({ error: 'Nenhuma organização detectada para este domínio.' })
+        }
+
         const body = request.body as {
-            orgId: string
             contactId: string
             channelId?: string
             direction: 'outbound' | 'inbound'
@@ -134,7 +140,7 @@ export default async function (app: FastifyInstance) {
         }
         const userId = request.session.user.id
 
-        const isMember = await prisma.member.findFirst({ where: { organizationId: body.orgId, userId } })
+        const isMember = await prisma.member.findFirst({ where: { organizationId: orgId, userId } })
         if (!isMember) return reply.status(403).send({ error: 'Sem permissão.' })
 
         // ─── ASSINATURA AUTOMÁTICA: Adiciona assinatura se outbound + text + usuário tem assinatura configurada ───
@@ -156,7 +162,7 @@ export default async function (app: FastifyInstance) {
 
         const message = await prisma.message.create({
             data: {
-                organizationId: body.orgId,
+                organizationId: orgId,
                 contactId:      body.contactId,
                 channelId:      body.channelId,
                 direction:      body.direction,

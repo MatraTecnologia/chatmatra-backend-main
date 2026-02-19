@@ -67,8 +67,18 @@ export default async function (app: FastifyInstance) {
         const isMember = await prisma.member.findFirst({ where: { organizationId: orgId, userId } })
         if (!isMember) return reply.status(403).send({ error: 'Sem permissão.' })
 
+        // ─── PERMISSÃO POR ROLE: Membros normais só veem contatos atribuídos a eles ou não atribuídos ───
+        const isAdminOrOwner = isMember.role === 'admin' || isMember.role === 'owner'
+
         const where = {
             organizationId: orgId,
+            // Se não é admin/owner, filtra apenas contatos atribuídos ao usuário ou não atribuídos
+            ...(!isAdminOrOwner ? {
+                OR: [
+                    { assignedToId: userId },
+                    { assignedToId: null },
+                ],
+            } : {}),
             ...(hasMessages ? { messages: { some: {} } } : {}),
             ...(tagId ? { tags: { some: { tagId } } } : {}),
             ...(search
