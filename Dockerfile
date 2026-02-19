@@ -30,10 +30,6 @@ FROM node:22-alpine AS runner
 
 WORKDIR /app
 
-# Usuário não-root para segurança
-RUN addgroup --system --gid 1001 nodejs \
- && adduser  --system --uid 1001 fastify
-
 RUN apk add --no-cache openssl
 
 # Copia somente o necessário do builder
@@ -48,8 +44,8 @@ COPY --from=builder /app/package*.json   ./
 COPY --from=builder /app/docker-entrypoint.sh ./docker-entrypoint.sh
 RUN chmod +x ./docker-entrypoint.sh
 
-USER fastify
-
-EXPOSE 3333
+# Porta padrão 80 — sobrescreva com a env var PORT se precisar
+ENV PORT=80
+EXPOSE 80
 
 ENTRYPOINT ["./docker-entrypoint.sh"]
