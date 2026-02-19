@@ -662,17 +662,32 @@ export default async function (app: FastifyInstance) {
                     let isNewContact = false
                     if (!contact) {
                         const rawNumber = remoteJid.split('@')[0]
+                        // Para mensagens enviadas (outbound), não usar pushName pois pode vir incorreto
+                        // Apenas mensagens recebidas (inbound) devem usar pushName do remetente
+                        const contactName = fromMe
+                            ? (rawNumber || 'Contato')
+                            : (pushName || rawNumber || 'Desconhecido')
+
                         contact = await prisma.contact.create({
                             data: {
                                 organizationId: channel.organizationId,
                                 channelId: channel.id,
                                 externalId: remoteJid,
                                 phone: rawNumber ? `+${rawNumber}` : undefined,
-                                name: pushName || rawNumber || 'Desconhecido',
+                                name: contactName,
                                 convStatus: 'pending',
                             },
                         })
                         isNewContact = true
+                    } else {
+                        // Atualiza o nome do contato se receber mensagem inbound com pushName diferente
+                        if (!fromMe && pushName && pushName !== contact.name) {
+                            await prisma.contact.update({
+                                where: { id: contact.id },
+                                data: { name: pushName },
+                            })
+                            contact.name = pushName
+                        }
                     }
 
                     const savedMsg = await prisma.message.create({

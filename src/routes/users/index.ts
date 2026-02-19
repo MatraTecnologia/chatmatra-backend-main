@@ -26,6 +26,61 @@ export default async function (app: FastifyInstance) {
         return request.session.user
     })
 
+    // GET /users/me/validate-tenant?domain=teste.matratecnologia.com
+    // Valida se o usuário é membro da organização do domínio informado
+    app.get('/me/validate-tenant', {
+        preHandler: requireAuth,
+        schema: {
+            tags: ['Users'],
+            summary: 'Valida acesso do usuário ao tenant (subdomínio)',
+            querystring: {
+                type: 'object',
+                required: ['domain'],
+                properties: {
+                    domain: { type: 'string' },
+                },
+            },
+            response: {
+                200: {
+                    type: 'object',
+                    properties: {
+                        authorized: { type: 'boolean' },
+                        organizationId: { type: 'string', nullable: true },
+                        organizationName: { type: 'string', nullable: true },
+                    },
+                },
+            },
+        },
+    }, async (request, reply) => {
+        const { domain } = request.query as { domain: string }
+        const userId = request.session.user.id
+
+        // Busca organização pelo domínio completo (ex: teste.matratecnologia.com)
+        const org = await prisma.organization.findUnique({
+            where: { domain },
+            select: { id: true, name: true },
+        })
+
+        if (!org) {
+            return reply.send({ authorized: false, organizationId: null, organizationName: null })
+        }
+
+        // Verifica se o usuário é membro dessa organização
+        const member = await prisma.member.findUnique({
+            where: { organizationId_userId: { organizationId: org.id, userId } },
+        })
+
+        if (!member) {
+            return reply.send({ authorized: false, organizationId: null, organizationName: null })
+        }
+
+        return reply.send({
+            authorized: true,
+            organizationId: org.id,
+            organizationName: org.name,
+        })
+    })
+
     // PATCH /users/me - atualizar perfil
     app.patch('/me', {
         preHandler: requireAuth,
