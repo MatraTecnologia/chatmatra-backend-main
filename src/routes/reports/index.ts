@@ -12,7 +12,7 @@ function periodStart(period: string): Date {
 
 export default async function (app: FastifyInstance) {
 
-    // ── GET /reports?orgId=&period= ────────────────────────────────────────
+    // ── GET /reports?period= ──────────────────────────────────────────────
     // Overview geral: totais de mensagens, contatos e conversas por status
     app.get('/', {
         preHandler: requireAuth,
@@ -21,15 +21,18 @@ export default async function (app: FastifyInstance) {
             summary: 'Overview de métricas da organização',
             querystring: {
                 type: 'object',
-                required: ['orgId'],
                 properties: {
-                    orgId:  { type: 'string' },
                     period: { type: 'string', enum: ['7d', '30d', '90d'], default: '30d' },
                 },
             },
         },
-    }, async (request) => {
-        const { orgId, period = '30d' } = request.query as { orgId: string; period?: string }
+    }, async (request, reply) => {
+        const orgId = request.organizationId
+        if (!orgId) {
+            return reply.status(400).send({ error: 'Nenhuma organização detectada para este domínio.' })
+        }
+
+        const { period = '30d' } = request.query as { period?: string }
         const since = periodStart(period)
 
         const [
@@ -73,7 +76,7 @@ export default async function (app: FastifyInstance) {
         }
     })
 
-    // ── GET /reports/agents?orgId=&period= ────────────────────────────────
+    // ── GET /reports/agents?period= ────────────────────────────────────────
     // Performance por agente: mensagens enviadas, contatos atribuídos, resolvidos
     app.get('/agents', {
         preHandler: requireAuth,
@@ -82,15 +85,18 @@ export default async function (app: FastifyInstance) {
             summary: 'Performance por agente',
             querystring: {
                 type: 'object',
-                required: ['orgId'],
                 properties: {
-                    orgId:  { type: 'string' },
                     period: { type: 'string', enum: ['7d', '30d', '90d'], default: '30d' },
                 },
             },
         },
-    }, async (request) => {
-        const { orgId, period = '30d' } = request.query as { orgId: string; period?: string }
+    }, async (request, reply) => {
+        const orgId = request.organizationId
+        if (!orgId) {
+            return reply.status(400).send({ error: 'Nenhuma organização detectada para este domínio.' })
+        }
+
+        const { period = '30d' } = request.query as { period?: string }
         const since = periodStart(period)
 
         const members = await prisma.member.findMany({
@@ -145,7 +151,7 @@ export default async function (app: FastifyInstance) {
         return { period, agents: agentStats }
     })
 
-    // ── GET /reports/timeline?orgId=&period= ──────────────────────────────
+    // ── GET /reports/timeline?period= ─────────────────────────────────────
     // Volume de mensagens por dia no período
     app.get('/timeline', {
         preHandler: requireAuth,
@@ -154,15 +160,18 @@ export default async function (app: FastifyInstance) {
             summary: 'Volume de mensagens por dia',
             querystring: {
                 type: 'object',
-                required: ['orgId'],
                 properties: {
-                    orgId:  { type: 'string' },
                     period: { type: 'string', enum: ['7d', '30d', '90d'], default: '30d' },
                 },
             },
         },
-    }, async (request) => {
-        const { orgId, period = '30d' } = request.query as { orgId: string; period?: string }
+    }, async (request, reply) => {
+        const orgId = request.organizationId
+        if (!orgId) {
+            return reply.status(400).send({ error: 'Nenhuma organização detectada para este domínio.' })
+        }
+
+        const { period = '30d' } = request.query as { period?: string }
         const since = periodStart(period)
 
         const rows = await prisma.$queryRaw<Array<{ day: Date; inbound: bigint; outbound: bigint }>>`
@@ -187,7 +196,7 @@ export default async function (app: FastifyInstance) {
         }
     })
 
-    // ── GET /reports/channels?orgId=&period= ──────────────────────────────
+    // ── GET /reports/channels?period= ─────────────────────────────────────
     // Mensagens por canal no período
     app.get('/channels', {
         preHandler: requireAuth,
@@ -196,15 +205,18 @@ export default async function (app: FastifyInstance) {
             summary: 'Mensagens por canal',
             querystring: {
                 type: 'object',
-                required: ['orgId'],
                 properties: {
-                    orgId:  { type: 'string' },
                     period: { type: 'string', enum: ['7d', '30d', '90d'], default: '30d' },
                 },
             },
         },
-    }, async (request) => {
-        const { orgId, period = '30d' } = request.query as { orgId: string; period?: string }
+    }, async (request, reply) => {
+        const orgId = request.organizationId
+        if (!orgId) {
+            return reply.status(400).send({ error: 'Nenhuma organização detectada para este domínio.' })
+        }
+
+        const { period = '30d' } = request.query as { period?: string }
         const since = periodStart(period)
 
         const channels = await prisma.channel.findMany({

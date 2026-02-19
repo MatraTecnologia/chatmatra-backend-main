@@ -5,7 +5,7 @@ import { subscribeOrg } from '../../lib/agentSse.js'
 
 export default async function (app: FastifyInstance) {
 
-    // ── GET /agent/sse?orgId= ─────────────────────────────────────────────────
+    // ── GET /agent/sse ────────────────────────────────────────────────────────
     // Authenticated SSE stream. Pushes new_message and conv_updated events to
     // all agents watching this org in real-time.
 
@@ -14,14 +14,13 @@ export default async function (app: FastifyInstance) {
         schema: {
             tags: ['Agent'],
             summary: 'SSE em tempo real para o dashboard do agente',
-            querystring: {
-                type: 'object',
-                required: ['orgId'],
-                properties: { orgId: { type: 'string' } },
-            },
         },
     }, async (request: FastifyRequest, reply: FastifyReply) => {
-        const { orgId } = request.query as { orgId: string }
+        const orgId = request.organizationId
+        if (!orgId) {
+            return reply.status(400).send({ error: 'Nenhuma organização detectada para este domínio.' })
+        }
+
         const userId = request.session.user.id
 
         const isMember = await prisma.member.findFirst({ where: { organizationId: orgId, userId } })
@@ -57,7 +56,7 @@ export default async function (app: FastifyInstance) {
         await new Promise<void>(() => {})
     })
 
-    // ── GET /agent/members?orgId= ─────────────────────────────────────────────
+    // ── GET /agent/members ────────────────────────────────────────────────────
     // Lists all members of the org (for the agent assignment selector).
 
     app.get('/members', {
@@ -65,14 +64,13 @@ export default async function (app: FastifyInstance) {
         schema: {
             tags: ['Agent'],
             summary: 'Lista agentes (membros) da organização',
-            querystring: {
-                type: 'object',
-                required: ['orgId'],
-                properties: { orgId: { type: 'string' } },
-            },
         },
     }, async (request: FastifyRequest, reply: FastifyReply) => {
-        const { orgId } = request.query as { orgId: string }
+        const orgId = request.organizationId
+        if (!orgId) {
+            return reply.status(400).send({ error: 'Nenhuma organização detectada para este domínio.' })
+        }
+
         const userId = request.session.user.id
 
         const isMember = await prisma.member.findFirst({ where: { organizationId: orgId, userId } })

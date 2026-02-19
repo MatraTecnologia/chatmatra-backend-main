@@ -6,7 +6,6 @@ import { prisma } from '../../lib/prisma.js'
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 type CampaignBody = {
-    orgId: string
     name: string
     description?: string
     status?: string
@@ -67,21 +66,20 @@ function extractLeadFields(fieldData: Array<{ name: string; values: string[] }>)
 
 export default async function (app: FastifyInstance) {
 
-    // ── GET /campaigns?orgId= ─────────────────────────────────────────────────
+    // ── GET /campaigns ────────────────────────────────────────────────────────
 
     app.get('/', {
         preHandler: requireAuth,
         schema: {
             tags: ['Campaigns'],
             summary: 'Lista campanhas da organização',
-            querystring: {
-                type: 'object',
-                required: ['orgId'],
-                properties: { orgId: { type: 'string' } },
-            },
         },
     }, async (request: FastifyRequest, reply: FastifyReply) => {
-        const { orgId } = request.query as { orgId: string }
+        const orgId = request.organizationId
+        if (!orgId) {
+            return reply.status(400).send({ error: 'Nenhuma organização detectada para este domínio.' })
+        }
+
         const userId = request.session.user.id
 
         const isMember = await prisma.member.findFirst({ where: { organizationId: orgId, userId } })
@@ -105,9 +103,8 @@ export default async function (app: FastifyInstance) {
             summary: 'Cria nova campanha',
             body: {
                 type: 'object',
-                required: ['orgId', 'name'],
+                required: ['name'],
                 properties: {
-                    orgId:         { type: 'string' },
                     name:          { type: 'string', minLength: 1 },
                     description:   { type: 'string' },
                     status:        { type: 'string' },
@@ -120,15 +117,20 @@ export default async function (app: FastifyInstance) {
             },
         },
     }, async (request: FastifyRequest, reply: FastifyReply) => {
+        const orgId = request.organizationId
+        if (!orgId) {
+            return reply.status(400).send({ error: 'Nenhuma organização detectada para este domínio.' })
+        }
+
         const body = request.body as CampaignBody
         const userId = request.session.user.id
 
-        const isMember = await prisma.member.findFirst({ where: { organizationId: body.orgId, userId } })
+        const isMember = await prisma.member.findFirst({ where: { organizationId: orgId, userId } })
         if (!isMember) return reply.status(403).send({ error: 'Sem permissão.' })
 
         const campaign = await prisma.campaign.create({
             data: {
-                organizationId: body.orgId,
+                organizationId: orgId,
                 name:           body.name,
                 description:    body.description,
                 status:         body.status ?? 'active',

@@ -16,16 +16,19 @@ export type TemplateType = keyof typeof TEMPLATE_TYPES
 
 export default async function (app: FastifyInstance) {
 
-    // GET /email-templates?orgId=xxx — lista todos os templates da org
+    // GET /email-templates — lista todos os templates da org
     app.get('/', {
         preHandler: requireAuth,
         schema: {
             tags: ['Email Templates'],
             summary: 'Lista templates de e-mail da organização',
-            querystring: { type: 'object', required: ['orgId'], properties: { orgId: { type: 'string' } } },
         },
     }, async (request, reply) => {
-        const { orgId } = request.query as { orgId: string }
+        const orgId = request.organizationId
+        if (!orgId) {
+            return reply.status(400).send({ error: 'Nenhuma organização detectada para este domínio.' })
+        }
+
         const userId = request.session.user.id
 
         const isMember = await prisma.member.findFirst({ where: { organizationId: orgId, userId } })
@@ -35,18 +38,21 @@ export default async function (app: FastifyInstance) {
         return templates
     })
 
-    // GET /email-templates/:type?orgId=xxx — retorna template específico (ou null)
+    // GET /email-templates/:type — retorna template específico (ou null)
     app.get('/:type', {
         preHandler: requireAuth,
         schema: {
             tags: ['Email Templates'],
             summary: 'Retorna um template de e-mail específico',
-            params:      { type: 'object', properties: { type: { type: 'string' } } },
-            querystring: { type: 'object', required: ['orgId'], properties: { orgId: { type: 'string' } } },
+            params: { type: 'object', properties: { type: { type: 'string' } } },
         },
     }, async (request, reply) => {
+        const orgId = request.organizationId
+        if (!orgId) {
+            return reply.status(400).send({ error: 'Nenhuma organização detectada para este domínio.' })
+        }
+
         const { type } = request.params as { type: string }
-        const { orgId } = request.query as { orgId: string }
         const userId = request.session.user.id
 
         const isMember = await prisma.member.findFirst({ where: { organizationId: orgId, userId } })
@@ -68,9 +74,8 @@ export default async function (app: FastifyInstance) {
             params: { type: 'object', properties: { type: { type: 'string' } } },
             body: {
                 type: 'object',
-                required: ['orgId', 'subject', 'html'],
+                required: ['subject', 'html'],
                 properties: {
-                    orgId:   { type: 'string' },
                     subject: { type: 'string', minLength: 1 },
                     html:    { type: 'string', minLength: 1 },
                     design:  { type: 'object', nullable: true },
@@ -78,18 +83,23 @@ export default async function (app: FastifyInstance) {
             },
         },
     }, async (request, reply) => {
+        const orgId = request.organizationId
+        if (!orgId) {
+            return reply.status(400).send({ error: 'Nenhuma organização detectada para este domínio.' })
+        }
+
         const { type } = request.params as { type: string }
-        const body = request.body as { orgId: string; subject: string; html: string; design?: object }
+        const body = request.body as { subject: string; html: string; design?: object }
         const userId = request.session.user.id
 
-        const isMember = await prisma.member.findFirst({ where: { organizationId: body.orgId, userId } })
+        const isMember = await prisma.member.findFirst({ where: { organizationId: orgId, userId } })
         if (!isMember) return reply.status(403).send({ error: 'Sem permissão.' })
 
         const template = await prisma.emailTemplate.upsert({
-            where: { organizationId_type: { organizationId: body.orgId, type } },
+            where: { organizationId_type: { organizationId: orgId, type } },
             update: { subject: body.subject, html: body.html, design: body.design ?? null },
             create: {
-                organizationId: body.orgId,
+                organizationId: orgId,
                 type,
                 subject: body.subject,
                 html: body.html,
@@ -107,11 +117,14 @@ export default async function (app: FastifyInstance) {
             tags: ['Email Templates'],
             summary: 'Remove template personalizado (restaura padrão)',
             params: { type: 'object', properties: { type: { type: 'string' } } },
-            querystring: { type: 'object', required: ['orgId'], properties: { orgId: { type: 'string' } } },
         },
     }, async (request, reply) => {
+        const orgId = request.organizationId
+        if (!orgId) {
+            return reply.status(400).send({ error: 'Nenhuma organização detectada para este domínio.' })
+        }
+
         const { type } = request.params as { type: string }
-        const { orgId } = request.query as { orgId: string }
         const userId = request.session.user.id
 
         const isMember = await prisma.member.findFirst({ where: { organizationId: orgId, userId } })

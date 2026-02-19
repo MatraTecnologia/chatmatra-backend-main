@@ -5,7 +5,6 @@ import { prisma } from '../../lib/prisma.js'
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 type AgentBody = {
-    orgId: string
     name: string
     description?: string
     type?: string
@@ -52,21 +51,20 @@ async function assertMember(orgId: string, userId: string, reply: FastifyReply) 
 
 export default async function (app: FastifyInstance) {
 
-    // ── GET /copilot/agents?orgId= ────────────────────────────────────────────
+    // ── GET /copilot/agents ───────────────────────────────────────────────────
 
     app.get('/agents', {
         preHandler: requireAuth,
         schema: {
             tags: ['Copilot'],
             summary: 'Lista agentes de IA da organização',
-            querystring: {
-                type: 'object',
-                required: ['orgId'],
-                properties: { orgId: { type: 'string' } },
-            },
         },
     }, async (request: FastifyRequest, reply: FastifyReply) => {
-        const { orgId } = request.query as { orgId: string }
+        const orgId = request.organizationId
+        if (!orgId) {
+            return reply.status(400).send({ error: 'Nenhuma organização detectada para este domínio.' })
+        }
+
         const userId = request.session.user.id
 
         if (!await assertMember(orgId, userId, reply)) return
@@ -91,9 +89,8 @@ export default async function (app: FastifyInstance) {
             summary: 'Cria agente de IA',
             body: {
                 type: 'object',
-                required: ['orgId', 'name'],
+                required: ['name'],
                 properties: {
-                    orgId:        { type: 'string' },
                     name:         { type: 'string', minLength: 1 },
                     description:  { type: 'string' },
                     type:         { type: 'string' },
@@ -106,14 +103,19 @@ export default async function (app: FastifyInstance) {
             },
         },
     }, async (request: FastifyRequest, reply: FastifyReply) => {
+        const orgId = request.organizationId
+        if (!orgId) {
+            return reply.status(400).send({ error: 'Nenhuma organização detectada para este domínio.' })
+        }
+
         const body = request.body as AgentBody
         const userId = request.session.user.id
 
-        if (!await assertMember(body.orgId, userId, reply)) return
+        if (!await assertMember(orgId, userId, reply)) return
 
         const agent = await prisma.aiAgent.create({
             data: {
-                organizationId: body.orgId,
+                organizationId: orgId,
                 name:           body.name,
                 description:    body.description,
                 type:           body.type        ?? 'support',
