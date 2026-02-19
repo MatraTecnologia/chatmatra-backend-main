@@ -41,7 +41,7 @@ export default async function (app: FastifyInstance) {
 
         const org = await prisma.organization.findUnique({
             where: { domain: domain.toLowerCase().trim() },
-            select: { id: true, name: true, slug: true, logo: true },
+            select: { id: true, name: true, slug: true, logo: true, favicon: true },
         })
 
         return { exists: !!org, organization: org ?? null }
@@ -179,11 +179,12 @@ export default async function (app: FastifyInstance) {
                     name: { type: 'string', minLength: 2 },
                     slug: { type: 'string' },
                     logo: { type: 'string' },
+                    favicon: { type: 'string' },
                 },
             },
         },
     }, async (request, reply) => {
-        const { name, slug, logo } = request.body as { name: string; slug?: string; logo?: string }
+        const { name, slug, logo, favicon } = request.body as { name: string; slug?: string; logo?: string; favicon?: string }
         const userId = request.session.user.id
 
         const org = await prisma.organization.create({
@@ -191,6 +192,7 @@ export default async function (app: FastifyInstance) {
                 name,
                 slug: slug ?? name.toLowerCase().replace(/\s+/g, '-'),
                 logo,
+                favicon,
                 members: {
                     create: { userId, role: 'owner' },
                 },
@@ -281,6 +283,7 @@ export default async function (app: FastifyInstance) {
                 properties: {
                     name:         { type: 'string' },
                     logo:         { type: 'string' },
+                    favicon:      { type: 'string' },
                     domain:       { type: 'string' },
                     fbAppId:      { type: 'string', nullable: true },
                     fbAppSecret:  { type: 'string', nullable: true },
@@ -300,9 +303,10 @@ export default async function (app: FastifyInstance) {
 
         if (!member) return reply.status(403).send({ error: 'Sem permissão.' })
 
-        const { name, logo, domain, fbAppId, fbAppSecret } = request.body as {
+        const { name, logo, favicon, domain, fbAppId, fbAppSecret } = request.body as {
             name?: string
             logo?: string
+            favicon?: string
             domain?: string
             fbAppId?: string | null
             fbAppSecret?: string | null
@@ -313,6 +317,7 @@ export default async function (app: FastifyInstance) {
             data: {
                 ...(name        !== undefined && { name }),
                 ...(logo        !== undefined && { logo }),
+                ...(favicon     !== undefined && { favicon }),
                 ...(domain      !== undefined && { domain }),
                 ...(fbAppId     !== undefined && { fbAppId }),
                 ...(fbAppSecret !== undefined && { fbAppSecret }),
@@ -335,6 +340,7 @@ export default async function (app: FastifyInstance) {
                 properties: {
                     name:         { type: 'string' },
                     logo:         { type: 'string' },
+                    favicon:      { type: 'string' },
                     fbAppId:      { type: 'string', nullable: true },
                     fbAppSecret:  { type: 'string', nullable: true },
                 },
@@ -355,9 +361,10 @@ export default async function (app: FastifyInstance) {
 
         if (!member) return reply.status(403).send({ error: 'Sem permissão.' })
 
-        const { name, logo, fbAppId, fbAppSecret } = request.body as {
+        const { name, logo, favicon, fbAppId, fbAppSecret } = request.body as {
             name?: string
             logo?: string
+            favicon?: string
             fbAppId?: string | null
             fbAppSecret?: string | null
         }
@@ -367,6 +374,7 @@ export default async function (app: FastifyInstance) {
             data: {
                 ...(name        !== undefined && { name }),
                 ...(logo        !== undefined && { logo }),
+                ...(favicon     !== undefined && { favicon }),
                 ...(fbAppId     !== undefined && { fbAppId }),
                 ...(fbAppSecret !== undefined && { fbAppSecret }),
             },

@@ -82,6 +82,7 @@ model Organization {
   name      String
   slug      String?  @unique
   logo      String?
+  favicon   String?  // favicon/ícone da organização (.ico, .png)
   domain    String?  @unique  // domínio da empresa (ex: empresa.com.br)
   metadata  String?
   createdAt DateTime @default(now())
