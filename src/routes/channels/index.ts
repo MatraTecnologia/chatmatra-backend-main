@@ -342,17 +342,27 @@ export default async function (app: FastifyInstance) {
         const cfg = channel.config as WhatsAppConfig
 
         // Tenta criar a instância (se já existir a Evolution API retorna erro, ignoramos)
+        const backendUrl = (process.env.BACKEND_URL ?? '').replace(/\/$/, '')
+        const webhookEvents = ['MESSAGES_UPSERT', 'CONNECTION_UPDATE', 'MESSAGES_UPDATE', 'SEND_MESSAGE']
         await evolutionFetch(cfg, '/instance/create', {
             method: 'POST',
             body: JSON.stringify({
                 instanceName: cfg.instanceName,
                 qrcode: true,
                 integration: 'WHATSAPP-BAILEYS',
+                syncFullHistory: true,
+                ...(backendUrl && {
+                    webhook: {
+                        url: `${backendUrl}/channels/whatsapp/webhook`,
+                        byEvents: false,
+                        base64: false,
+                        events: webhookEvents,
+                    },
+                }),
             }),
         })
 
-        // Configura o webhook automaticamente na Evolution API
-        const backendUrl = (process.env.BACKEND_URL ?? '').replace(/\/$/, '')
+        // Garante webhook atualizado mesmo se a instância já existia
         if (backendUrl) {
             await evolutionFetch(cfg, `/webhook/set/${cfg.instanceName}`, {
                 method: 'POST',
@@ -360,9 +370,9 @@ export default async function (app: FastifyInstance) {
                     url: `${backendUrl}/channels/whatsapp/webhook`,
                     webhook_by_events: false,
                     webhook_base64: false,
-                    events: ['MESSAGES_UPSERT', 'CONNECTION_UPDATE', 'MESSAGES_UPDATE', 'SEND_MESSAGE'],
+                    events: webhookEvents,
                 }),
-            }).catch(() => null) // não bloqueia o fluxo se falhar
+            }).catch(() => null)
         }
 
         // Busca o QR code
