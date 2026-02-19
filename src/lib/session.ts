@@ -24,13 +24,18 @@ export async function requireAuth(request: FastifyRequest, reply: FastifyReply) 
     request.session = session
 
     // ─── MULTI-TENANT: Detecta organização pelo domínio da requisição ────────────
-    const hostname =
+    let hostname =
         request.headers['x-forwarded-host'] ||
         request.headers['host'] ||
         request.hostname
 
+    // Garante que hostname é string (pode vir como array em alguns casos)
+    if (Array.isArray(hostname)) {
+        hostname = hostname[0]
+    }
+
     // Ignora em localhost/desenvolvimento
-    if (hostname && hostname !== 'localhost' && !hostname.startsWith('localhost:') && !hostname.startsWith('127.0.0.1')) {
+    if (hostname && typeof hostname === 'string' && hostname !== 'localhost' && !hostname.startsWith('localhost:') && !hostname.startsWith('127.0.0.1')) {
         // Remove porta se houver (ex: teste.matratecnologia.com:3000 → teste.matratecnologia.com)
         const domain = hostname.split(':')[0]
 
