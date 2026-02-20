@@ -4,7 +4,6 @@ import { requireAuth } from '../../lib/session.js'
 import { prisma } from '../../lib/prisma.js'
 import { auth } from '../../lib/auth.js'
 import { sendEmail } from '../../lib/mail.js'
-import { log } from '../../lib/logger.js'
 
 export default async function (app: FastifyInstance) {
     // GET /organizations/check-domain?domain=empresa.com.br — público, sem autenticação
@@ -465,7 +464,6 @@ export default async function (app: FastifyInstance) {
         if (target.role === 'owner') return reply.status(403).send({ error: 'Não é possível remover o owner.' })
 
         await prisma.member.delete({ where: { id: memberId, organizationId: id } })
-        log.info(`Membro ${memberId} removido da org ${id} por ${userId}`)
         return reply.status(204).send()
     })
 
@@ -507,7 +505,6 @@ export default async function (app: FastifyInstance) {
         if (body.customRoleId !== undefined) updateData.customRoleId = body.customRoleId ?? null
 
         const updated = await (prisma as any).member.update({ where: { id: memberId }, data: updateData })
-        log.info(`Papel de ${memberId} atualizado na org ${id}`)
         return reply.send(updated)
     })
 
@@ -569,7 +566,6 @@ export default async function (app: FastifyInstance) {
                 `,
             }).catch(() => null)
 
-            log.ok(`Membro existente ${cleanEmail} adicionado à org ${id} com role="${role}"`)
             return reply.status(201).send({ member, isNewUser: false })
         }
 
@@ -600,7 +596,6 @@ export default async function (app: FastifyInstance) {
             body: { email: cleanEmail, redirectTo: `${frontendUrl}/reset-password` },
         }).catch(() => null)
 
-        log.ok(`Novo usuário ${cleanEmail} criado e adicionado à org ${id} com role="${role}"`)
         return reply.status(201).send({ member, isNewUser: true })
     })
 
@@ -631,7 +626,6 @@ export default async function (app: FastifyInstance) {
             body: { email: target.user.email, redirectTo: `${frontendUrl}/reset-password` },
         }).catch(() => null)
 
-        log.info(`Reset password enviado para ${target.user.email}`)
         return reply.send({ ok: true })
     })
 
@@ -662,7 +656,6 @@ export default async function (app: FastifyInstance) {
             body: { email: target.user.email },
         }).catch(() => null)
 
-        log.info(`Verificação de e-mail reenviada para ${target.user.email}`)
         return reply.send({ ok: true })
     })
 
@@ -731,7 +724,6 @@ export default async function (app: FastifyInstance) {
             },
         })
 
-        log.ok(`Papel "${body.name}" criado na org ${id}`)
         return reply.status(201).send(role)
     })
 
@@ -777,7 +769,6 @@ export default async function (app: FastifyInstance) {
             },
         })
 
-        log.ok(`Papel ${roleId} atualizado na org ${id}`)
         return reply.send(updated)
     })
 
@@ -803,7 +794,6 @@ export default async function (app: FastifyInstance) {
         // Desassocia membros antes de deletar (customRoleId → null já é feito pelo onDelete: SetNull do prisma)
         await (prisma as any).customRole.delete({ where: { id: roleId } })
 
-        log.ok(`Papel ${roleId} removido da org ${id}`)
         return reply.send({ ok: true })
     })
 

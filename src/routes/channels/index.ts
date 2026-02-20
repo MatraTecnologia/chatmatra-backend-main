@@ -438,25 +438,43 @@ export default async function (app: FastifyInstance) {
         return { channelStatus: newStatus, instanceState }
     })
 
-    // POST /channels/:id/whatsapp/send — envia mensagem de texto via Evolution API
+    // POST /channels/:id/whatsapp/send — envia mensagem de texto ou mídia via Evolution API
     app.post('/:id/whatsapp/send', {
         preHandler: requireAuth,
         schema: {
             tags: ['Channels'],
-            summary: 'Envia mensagem de texto WhatsApp',
+            summary: 'Envia mensagem de texto ou mídia WhatsApp',
             params: { type: 'object', properties: { id: { type: 'string' } } },
             body: {
                 type: 'object',
-                required: ['number', 'text'],
+                required: ['number'],
                 properties: {
                     number: { type: 'string' }, // número ou JID completo
                     text:   { type: 'string', minLength: 1 },
+                    mediaMessage: {
+                        type: 'object',
+                        properties: {
+                            mediatype: { type: 'string', enum: ['image', 'video', 'audio', 'document'] },
+                            fileName: { type: 'string' },
+                            media: { type: 'string' }, // base64 sem prefixo data:
+                            caption: { type: 'string' },
+                        },
+                        required: ['mediatype', 'media'],
+                    },
                 },
+                oneOf: [
+                    { required: ['text'] },
+                    { required: ['mediaMessage'] },
+                ],
             },
         },
     }, async (request, reply) => {
         const { id } = request.params as { id: string }
-        const { number, text } = request.body as { number: string; text: string }
+        const { number, text, mediaMessage } = request.body as {
+            number: string
+            text?: string
+            mediaMessage?: { mediatype: string; fileName?: string; media: string; caption?: string }
+        }
         const userId = request.session.user.id
 
         const channel = await prisma.channel.findUnique({ where: { id } })
@@ -476,10 +494,29 @@ export default async function (app: FastifyInstance) {
         // Remove sufixo @s.whatsapp.net se vier o JID completo
         const cleanNumber = number.includes('@') ? number.split('@')[0] : number
 
-        const result = await evolutionFetch(cfg, `/message/sendText/${cfg.instanceName}`, {
-            method: 'POST',
-            body: JSON.stringify({ number: cleanNumber, text }),
-        })
+        let result
+
+        if (mediaMessage) {
+            // Envia mídia
+            result = await evolutionFetch(cfg, `/message/sendMedia/${cfg.instanceName}`, {
+                method: 'POST',
+                body: JSON.stringify({
+                    number: cleanNumber,
+                    mediatype: mediaMessage.mediatype,
+                    fileName: mediaMessage.fileName,
+                    media: mediaMessage.media,
+                    caption: mediaMessage.caption,
+                }),
+            })
+        } else if (text) {
+            // Envia texto
+            result = await evolutionFetch(cfg, `/message/sendText/${cfg.instanceName}`, {
+                method: 'POST',
+                body: JSON.stringify({ number: cleanNumber, text }),
+            })
+        } else {
+            return reply.status(400).send({ error: 'É necessário enviar text ou mediaMessage.' })
+        }
 
         if (!result.ok) {
             return reply.status(502).send({ error: 'Falha ao enviar mensagem.', detail: result.data })
@@ -533,18 +570,6 @@ export default async function (app: FastifyInstance) {
             fromMe:    message.direction === 'outbound',
         }
 
-        // Log detalhado dos dados da mídia
-        log.divider('MEDIA REQUEST')
-        log.info('📦 Dados da mensagem:')
-        log.info(`  - Message ID: ${message.id}`)
-        log.info(`  - External ID (WhatsApp Key): ${message.externalId}`)
-        log.info(`  - Contact External ID (remoteJid): ${message.contact.externalId}`)
-        log.info(`  - Direction: ${message.direction}`)
-        log.info(`  - Type: ${message.type}`)
-        log.info(`  - Instance: ${cfg.instanceName}`)
-        log.info('🔑 WhatsApp Key:')
-        log.info(`  ${JSON.stringify(waKey, null, 2)}`)
-
         const mediaEndpoint = `/chat/getBase64FromMediaMessage/${cfg.instanceName}`
         const requestBody = {
             message: {
@@ -557,25 +582,14 @@ export default async function (app: FastifyInstance) {
             convertToMp4: false,
         }
 
-        log.info('🌐 Evolution API Request:')
-        log.info(`  - URL: ${cfg.evolutionUrl}${mediaEndpoint}`)
-        log.info(`  - Body: ${JSON.stringify(requestBody, null, 2)}`)
-
         try {
-            // Tenta buscar base64 da mídia via Evolution API
-            // Endpoint: POST /chat/getBase64FromMediaMessage/{instance}
             const result = await evolutionFetch(cfg, mediaEndpoint, {
                 method: 'POST',
                 body: JSON.stringify(requestBody),
             })
 
-            log.info(`📡 Evolution API Response Status: ${result.status}`)
-
             if (!result.ok) {
-                log.error(`❌ Evolution API erro ao buscar mídia:`)
-                log.error(`  - Status: ${result.status}`)
-                log.error(`  - Response: ${JSON.stringify(result.data, null, 2)}`)
-                log.divider()
+                log.error(`Evolution API erro ao buscar mídia: Status ${result.status}`)
                 return reply.status(502).send({
                     error: 'Não foi possível obter a mídia da Evolution API.',
                     details: result.data,
@@ -583,9 +597,7 @@ export default async function (app: FastifyInstance) {
             }
 
             if (!result.data?.base64) {
-                log.error('❌ Evolution API retornou sem base64')
-                log.error(`  - Response Data: ${JSON.stringify(result.data, null, 2)}`)
-                log.divider()
+                log.error('Evolution API retornou sem base64')
                 return reply.status(502).send({ error: 'Mídia não disponível na Evolution API.' })
             }
 
@@ -595,19 +607,9 @@ export default async function (app: FastifyInstance) {
                 mimeType:  result.data.mimetype  as string ?? 'application/octet-stream',
             }
 
-            log.ok('✅ Mídia obtida com sucesso!')
-            log.info(`  - Media Type: ${mediaData.mediaType}`)
-            log.info(`  - MIME Type: ${mediaData.mimeType}`)
-            log.info(`  - Base64 Length: ${mediaData.base64.length} caracteres`)
-            log.info(`  - Tamanho estimado: ~${Math.round(mediaData.base64.length * 0.75 / 1024)} KB`)
-            log.divider()
-
             return mediaData
         } catch (error) {
-            log.error(`❌ Erro ao buscar mídia:`)
-            log.error(`  - Error: ${error}`)
-            log.error(`  - Stack: ${error instanceof Error ? error.stack : 'N/A'}`)
-            log.divider()
+            log.error(`Erro ao buscar mídia: ${error instanceof Error ? error.message : error}`)
             return reply.status(502).send({ error: 'Erro ao comunicar com Evolution API.' })
         }
     })
@@ -654,8 +656,6 @@ export default async function (app: FastifyInstance) {
         // Converte para o formato padrão UPPERCASE_UNDERSCORE
         const event = (body.event ?? '').toUpperCase().replace(/\./g, '_')
 
-        log.webhook(`${body.instance ?? '?'} → ${event}`)
-
         // Normaliza: contacts events têm data como array, demais como objeto
         const dataArr: WaContact[] | null = Array.isArray(body.data) ? body.data as WaContact[] : null
         const dataObj: WaDataObj | undefined = !Array.isArray(body.data) ? body.data as WaDataObj : undefined
@@ -688,7 +688,6 @@ export default async function (app: FastifyInstance) {
         const newStatus = stateToStatus[instanceState]
 
         if (newStatus) {
-            log.wa(`CONNECTION_UPDATE: canal "${channel.name}" → ${newStatus}`)
             const updatedConfig = {
                 ...(channel.config as Record<string, unknown>),
                 phone: dataObj?.number ?? (channel.config as WhatsAppConfig).phone,
@@ -730,7 +729,6 @@ export default async function (app: FastifyInstance) {
 
                 if (content || isMedia) {
                     const direction = fromMe ? 'outbound' : 'inbound'
-                    log.msg(`${direction === 'inbound' ? '←' : '→'} ${remoteJid}  "${content.slice(0, 60)}${content.length > 60 ? '…' : ''}"`)
 
                     // Busca ou cria o contato pelo JID
                     let contact = await prisma.contact.findFirst({
@@ -780,21 +778,6 @@ export default async function (app: FastifyInstance) {
                             externalId: key.id,
                         },
                     })
-
-                    // Log armazenamento da mensagem
-                    log.divider('MESSAGE STORED')
-                    log.ok('💾 Mensagem armazenada no banco:')
-                    log.info(`  - Message ID: ${savedMsg.id}`)
-                    log.info(`  - External ID (WhatsApp Key): ${key.id}`)
-                    log.info(`  - Contact ID: ${contact.id}`)
-                    log.info(`  - Contact External ID: ${contact.externalId}`)
-                    log.info(`  - Type: ${msgType}`)
-                    log.info(`  - Direction: ${direction}`)
-                    log.info(`  - Content Preview: ${content.substring(0, 100)}${content.length > 100 ? '...' : ''}`)
-                    if (msgType !== 'text' && msgType !== 'note') {
-                        log.info(`  - 📎 Mensagem de mídia - para baixar use: GET /channels/${channel.id}/messages/${savedMsg.id}/media`)
-                    }
-                    log.divider()
 
                     // Publica mensagem em tempo real para os agentes
                     // Se contato é novo, inclui dados para o frontend adicionar na lista
@@ -916,18 +899,12 @@ export default async function (app: FastifyInstance) {
             const labelName  = (label?.name ?? '').trim()
             const waLabelId  = (label?.id ?? '').toString().trim()
 
-            log.tag(`LABELS_ASSOCIATION jid=${jid ?? '?'} label="${labelName}" action=${assocType ?? '?'}`)
-
             if (jid && labelName && (jid.includes('@s.whatsapp.net') || jid.includes('@c.us'))) {
                 // eslint-disable-next-line @typescript-eslint/no-explicit-any
                 const pc = prisma as any
                 const contact = await pc.contact.findFirst({
                     where: { organizationId: channel.organizationId, externalId: jid },
                 })
-
-                if (!contact) {
-                    log.warn(`LABELS_ASSOCIATION: contato com jid=${jid} não encontrado — mensagem ainda não chegou?`)
-                }
 
                 if (contact) {
                     if (assocType === 'add') {
@@ -960,7 +937,6 @@ export default async function (app: FastifyInstance) {
                             create: { contactId: contact.id, tagId: tag.id },
                             update: {},
                         })
-                        log.ok(`LABELS_ASSOCIATION: tag "${labelName}" adicionada ao contato ${contact.name}`)
                     } else if (assocType === 'remove') {
                         const tag = await pc.tag.findFirst({
                             where: {
@@ -975,9 +951,6 @@ export default async function (app: FastifyInstance) {
                             await pc.contactTag.deleteMany({
                                 where: { contactId: contact.id, tagId: tag.id },
                             })
-                            log.ok(`LABELS_ASSOCIATION: tag "${labelName}" removida do contato ${contact.name}`)
-                        } else {
-                            log.warn(`LABELS_ASSOCIATION: tag "${labelName}" não encontrada na org para remover`)
                         }
                     }
                 }

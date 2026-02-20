@@ -244,8 +244,6 @@ export async function assignContact(
       }
     });
 
-    log.info(`Contact ${contactId} assigned to agent ${assigneeId}`);
-
     // TODO: Publicar evento SSE conv_updated
     // publishToOrg(organizationId, {
     //   type: 'conv_updated',

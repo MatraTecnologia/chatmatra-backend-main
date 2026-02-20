@@ -27,7 +27,6 @@ export default async function (app: FastifyInstance) {
         }
 
         const responseText = await response.text()
-        request.log.info({ status: response.status, body: responseText }, 'Better Auth response')
 
         reply.status(response.status)
         response.headers.forEach((value, key) => reply.header(key, value))
