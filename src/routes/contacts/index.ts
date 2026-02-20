@@ -2,6 +2,7 @@ import type { FastifyInstance } from 'fastify'
 import { requireAuth } from '../../lib/session.js'
 import { prisma } from '../../lib/prisma.js'
 import { publishToOrg } from '../../lib/agentSse.js'
+import { processAutoAssignment } from '../../lib/assignmentEngine.js'
 
 // ─── Helper Evolution API ─────────────────────────────────────────────────────
 
@@ -308,6 +309,11 @@ export default async function (app: FastifyInstance) {
                 externalId: body.externalId,
                 notes:      body.notes,
             },
+        })
+
+        // Process auto-assignment if enabled
+        processAutoAssignment(contact.id, orgId).catch(err => {
+            console.error('Auto-assignment error:', err)
         })
 
         return reply.status(201).send(contact)

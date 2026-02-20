@@ -899,4 +899,335 @@ export default async function (app: FastifyInstance) {
             permissions,
         })
     })
+
+    // ─── Assignment Settings ────────────────────────────────────────────────────
+
+    // GET /organizations/current/assignment-settings - buscar configurações de auto-assignment
+    app.get('/current/assignment-settings', {
+        preHandler: requireAuth,
+        schema: {
+            tags: ['Organizations'],
+            summary: 'Busca configurações de atribuição automática',
+        },
+    }, async (request, reply) => {
+        const orgId = request.organizationId
+        if (!orgId) {
+            return reply.status(400).send({ error: 'Nenhuma organização detectada.' })
+        }
+
+        const org = await prisma.organization.findUnique({
+            where: { id: orgId },
+            select: {
+                autoAssignmentEnabled: true,
+                autoAssignmentStrategy: true,
+            },
+        })
+
+        if (!org) return reply.status(404).send({ error: 'Organização não encontrada.' })
+
+        return org
+    })
+
+    // PATCH /organizations/current/assignment-settings - atualizar configurações de auto-assignment
+    app.patch('/current/assignment-settings', {
+        preHandler: requireAuth,
+        schema: {
+            tags: ['Organizations'],
+            summary: 'Atualiza configurações de atribuição automática',
+            body: {
+                type: 'object',
+                properties: {
+                    autoAssignmentEnabled: { type: 'boolean' },
+                    autoAssignmentStrategy: {
+                        type: 'string',
+                        enum: ['round-robin', 'load-balancing', 'random']
+                    },
+                },
+            },
+        },
+    }, async (request, reply) => {
+        const orgId = request.organizationId
+        if (!orgId) {
+            return reply.status(400).send({ error: 'Nenhuma organização detectada.' })
+        }
+
+        const userId = request.session.user.id
+        const member = await prisma.member.findFirst({
+            where: { organizationId: orgId, userId, role: { in: ['owner', 'admin'] } },
+        })
+
+        if (!member) return reply.status(403).send({ error: 'Sem permissão.' })
+
+        const { autoAssignmentEnabled, autoAssignmentStrategy } = request.body as {
+            autoAssignmentEnabled?: boolean
+            autoAssignmentStrategy?: string
+        }
+
+        return prisma.organization.update({
+            where: { id: orgId },
+            data: {
+                ...(autoAssignmentEnabled !== undefined && { autoAssignmentEnabled }),
+                ...(autoAssignmentStrategy !== undefined && { autoAssignmentStrategy }),
+            },
+        })
+    })
+
+    // GET /organizations/current/assignment-rules - listar regras de atribuição
+    app.get('/current/assignment-rules', {
+        preHandler: requireAuth,
+        schema: {
+            tags: ['Organizations'],
+            summary: 'Lista regras de atribuição automática',
+        },
+    }, async (request, reply) => {
+        const orgId = request.organizationId
+        if (!orgId) {
+            return reply.status(400).send({ error: 'Nenhuma organização detectada.' })
+        }
+
+        const rules = await prisma.assignmentRule.findMany({
+            where: { organizationId: orgId },
+            orderBy: [
+                { priority: 'desc' },
+                { createdAt: 'asc' }
+            ],
+        })
+
+        return rules
+    })
+
+    // POST /organizations/current/assignment-rules - criar regra de atribuição
+    app.post('/current/assignment-rules', {
+        preHandler: requireAuth,
+        schema: {
+            tags: ['Organizations'],
+            summary: 'Cria uma regra de atribuição automática',
+            body: {
+                type: 'object',
+                required: ['name', 'conditionType', 'assignTo'],
+                properties: {
+                    name: { type: 'string' },
+                    active: { type: 'boolean' },
+                    priority: { type: 'number' },
+                    conditionType: {
+                        type: 'string',
+                        enum: ['always', 'channel', 'tag', 'keyword', 'time']
+                    },
+                    conditionValue: { type: 'object' },
+                    assignTo: {
+                        type: 'string',
+                        enum: ['specific', 'round-robin', 'load-balancing']
+                    },
+                    assigneeIds: {
+                        type: 'array',
+                        items: { type: 'string' }
+                    },
+                },
+            },
+        },
+    }, async (request, reply) => {
+        const orgId = request.organizationId
+        if (!orgId) {
+            return reply.status(400).send({ error: 'Nenhuma organização detectada.' })
+        }
+
+        const userId = request.session.user.id
+        const member = await prisma.member.findFirst({
+            where: { organizationId: orgId, userId, role: { in: ['owner', 'admin'] } },
+        })
+
+        if (!member) return reply.status(403).send({ error: 'Sem permissão.' })
+
+        const data = request.body as {
+            name: string
+            active?: boolean
+            priority?: number
+            conditionType: string
+            conditionValue?: object
+            assignTo: string
+            assigneeIds?: string[]
+        }
+
+        const rule = await prisma.assignmentRule.create({
+            data: {
+                organizationId: orgId,
+                name: data.name,
+                active: data.active ?? true,
+                priority: data.priority ?? 0,
+                conditionType: data.conditionType,
+                conditionValue: data.conditionValue ?? {},
+                assignTo: data.assignTo,
+                assigneeIds: data.assigneeIds ?? [],
+            },
+        })
+
+        return reply.status(201).send(rule)
+    })
+
+    // PATCH /organizations/current/assignment-rules/:ruleId - atualizar regra
+    app.patch('/current/assignment-rules/:ruleId', {
+        preHandler: requireAuth,
+        schema: {
+            tags: ['Organizations'],
+            summary: 'Atualiza uma regra de atribuição',
+            params: {
+                type: 'object',
+                properties: { ruleId: { type: 'string' } },
+            },
+            body: {
+                type: 'object',
+                properties: {
+                    name: { type: 'string' },
+                    active: { type: 'boolean' },
+                    priority: { type: 'number' },
+                    conditionType: { type: 'string' },
+                    conditionValue: { type: 'object' },
+                    assignTo: { type: 'string' },
+                    assigneeIds: {
+                        type: 'array',
+                        items: { type: 'string' }
+                    },
+                },
+            },
+        },
+    }, async (request, reply) => {
+        const orgId = request.organizationId
+        if (!orgId) {
+            return reply.status(400).send({ error: 'Nenhuma organização detectada.' })
+        }
+
+        const userId = request.session.user.id
+        const member = await prisma.member.findFirst({
+            where: { organizationId: orgId, userId, role: { in: ['owner', 'admin'] } },
+        })
+
+        if (!member) return reply.status(403).send({ error: 'Sem permissão.' })
+
+        const { ruleId } = request.params as { ruleId: string }
+        const data = request.body as {
+            name?: string
+            active?: boolean
+            priority?: number
+            conditionType?: string
+            conditionValue?: object
+            assignTo?: string
+            assigneeIds?: string[]
+        }
+
+        // Verifica se a regra existe e pertence à organização
+        const existingRule = await prisma.assignmentRule.findFirst({
+            where: { id: ruleId, organizationId: orgId },
+        })
+
+        if (!existingRule) {
+            return reply.status(404).send({ error: 'Regra não encontrada.' })
+        }
+
+        const rule = await prisma.assignmentRule.update({
+            where: { id: ruleId },
+            data: {
+                ...(data.name !== undefined && { name: data.name }),
+                ...(data.active !== undefined && { active: data.active }),
+                ...(data.priority !== undefined && { priority: data.priority }),
+                ...(data.conditionType !== undefined && { conditionType: data.conditionType }),
+                ...(data.conditionValue !== undefined && { conditionValue: data.conditionValue }),
+                ...(data.assignTo !== undefined && { assignTo: data.assignTo }),
+                ...(data.assigneeIds !== undefined && { assigneeIds: data.assigneeIds }),
+            },
+        })
+
+        return rule
+    })
+
+    // DELETE /organizations/current/assignment-rules/:ruleId - deletar regra
+    app.delete('/current/assignment-rules/:ruleId', {
+        preHandler: requireAuth,
+        schema: {
+            tags: ['Organizations'],
+            summary: 'Deleta uma regra de atribuição',
+            params: {
+                type: 'object',
+                properties: { ruleId: { type: 'string' } },
+            },
+        },
+    }, async (request, reply) => {
+        const orgId = request.organizationId
+        if (!orgId) {
+            return reply.status(400).send({ error: 'Nenhuma organização detectada.' })
+        }
+
+        const userId = request.session.user.id
+        const member = await prisma.member.findFirst({
+            where: { organizationId: orgId, userId, role: { in: ['owner', 'admin'] } },
+        })
+
+        if (!member) return reply.status(403).send({ error: 'Sem permissão.' })
+
+        const { ruleId } = request.params as { ruleId: string }
+
+        // Verifica se a regra existe e pertence à organização
+        const existingRule = await prisma.assignmentRule.findFirst({
+            where: { id: ruleId, organizationId: orgId },
+        })
+
+        if (!existingRule) {
+            return reply.status(404).send({ error: 'Regra não encontrada.' })
+        }
+
+        await prisma.assignmentRule.delete({
+            where: { id: ruleId },
+        })
+
+        return reply.status(204).send()
+    })
+
+    // GET /organizations/current/agents-load - buscar carga de conversas por agente
+    app.get('/current/agents-load', {
+        preHandler: requireAuth,
+        schema: {
+            tags: ['Organizations'],
+            summary: 'Busca a carga de conversas por agente',
+        },
+    }, async (request, reply) => {
+        const orgId = request.organizationId
+        if (!orgId) {
+            return reply.status(400).send({ error: 'Nenhuma organização detectada.' })
+        }
+
+        const members = await prisma.member.findMany({
+            where: {
+                organizationId: orgId,
+                role: 'agent'
+            },
+            include: {
+                user: {
+                    select: {
+                        id: true,
+                        name: true,
+                        email: true,
+                        image: true,
+                        _count: {
+                            select: {
+                                assignedContacts: {
+                                    where: {
+                                        convStatus: { in: ['open', 'pending'] }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        })
+
+        const agentsLoad = members.map(member => ({
+            userId: member.user.id,
+            name: member.user.name,
+            email: member.user.email,
+            image: member.user.image,
+            activeConversations: member.user._count.assignedContacts,
+        }))
+
+        return agentsLoad
+    })
 }

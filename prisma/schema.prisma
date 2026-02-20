@@ -87,6 +87,10 @@ model Organization {
   metadata  String?
   createdAt DateTime @default(now())
 
+  // Configurações de atribuição automática
+  autoAssignmentEnabled  Boolean @default(false)  // Ativa/desativa atribuição automática
+  autoAssignmentStrategy String  @default("round-robin") // 'round-robin' | 'load-balancing' | 'random'
+
   members     Member[]
   invitations Invitation[]
   channels    Channel[]
@@ -97,6 +101,7 @@ model Organization {
   aiAgents       AiAgent[]
   customRoles    CustomRole[]
   emailTemplates EmailTemplate[]
+  assignmentRules AssignmentRule[]
   // Facebook App credentials (por organização)
   fbAppId     String?
   fbAppSecret String?
@@ -376,4 +381,29 @@ model EmailTemplate {
 
   @@unique([organizationId, type])
   @@map("email_templates")
+}
+
+// ─── Assignment Rules ──────────────────────────────────────────────────────────
+
+model AssignmentRule {
+  id             String   @id @default(cuid())
+  organizationId String
+  name           String   // Nome descritivo da regra
+  active         Boolean  @default(true)
+  priority       Int      @default(0)  // Maior = maior prioridade
+
+  // Condição: QUANDO aplicar esta regra
+  conditionType  String   // 'always' | 'channel' | 'tag' | 'keyword' | 'time'
+  conditionValue Json?    // Valor da condição (ex: { channelIds: [...], tags: [...], keywords: [...] })
+
+  // Ação: PARA QUEM atribuir
+  assignTo       String   // 'specific' | 'round-robin' | 'load-balancing'
+  assigneeIds    Json     @default("[]")  // string[] de User IDs (vazio = todos agentes)
+
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@map("assignment_rules")
 }

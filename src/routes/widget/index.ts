@@ -2,6 +2,7 @@ import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify'
 import { prisma } from '../../lib/prisma.js'
 import { subscribe } from '../../lib/widgetSse.js'
 import { publishToOrg } from '../../lib/agentSse.js'
+import { processAutoAssignment } from '../../lib/assignmentEngine.js'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -254,6 +255,11 @@ export default async function (app: FastifyInstance) {
                 status: message.status,
                 createdAt: message.createdAt.toISOString(),
             },
+        })
+
+        // Process auto-assignment if enabled
+        processAutoAssignment(contactId, channel.organizationId).catch(err => {
+            console.error('Auto-assignment error:', err)
         })
 
         return reply.status(201).send(message)
