@@ -63,6 +63,22 @@ export type AgentEvent =
           userName: string
           isTyping: boolean
       }
+    | {
+          type: 'user_online'
+          userId: string
+          userName: string
+          userImage: string | null
+          timestamp: string
+      }
+    | {
+          type: 'user_offline'
+          userId: string
+          timestamp: string
+      }
+    | {
+          type: 'presence_update'
+          users: OnlineUser[]
+      }
 
 type SubscriberCallback = {
     userId: string
