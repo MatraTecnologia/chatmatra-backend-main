@@ -23,6 +23,11 @@ export type UserPresence = {
         inputText?: string
         scrollPosition?: number
         lastAction?: string
+        // Novos campos para supervisão completa
+        pageState?: any  // Estado completo da página
+        clicks?: Array<{ x: number; y: number; timestamp: string; element: string }>
+        currentScroll?: { x: number; y: number }
+        formData?: Record<string, any>
     }
 }
 
@@ -34,11 +39,17 @@ export type PresenceEvent =
     | { type: 'user_viewing'; userId: string; contactId: string; organizationId: string }
     | { type: 'user_typing'; userId: string; contactId: string; isTyping: boolean; organizationId: string }
     | { type: 'presence_update'; users: UserPresence[]; organizationId: string }
-    // Novos eventos para supervisão em tempo real
+    // Eventos de supervisão em conversas
     | { type: 'screen_update'; userId: string; contactId: string; messages: any[]; organizationId: string }
     | { type: 'input_update'; userId: string; contactId: string; text: string; organizationId: string }
     | { type: 'scroll_update'; userId: string; contactId: string; position: number; organizationId: string }
     | { type: 'action_performed'; userId: string; contactId: string; action: string; organizationId: string }
+    // Novos eventos para supervisão global (todas as páginas)
+    | { type: 'page_loaded'; userId: string; route: string; state: any; organizationId: string }
+    | { type: 'page_state'; userId: string; route: string; state: any; organizationId: string }
+    | { type: 'user_click'; userId: string; x: number; y: number; element: string; route: string; organizationId: string; timestamp: string }
+    | { type: 'user_scroll_global'; userId: string; x: number; y: number; route: string; organizationId: string; timestamp: string }
+    | { type: 'user_input_global'; userId: string; field: string; value: string; route: string; organizationId: string; timestamp: string }
 
 // Map: organizationId -> userId -> UserPresence
 const presenceMap = new Map<string, Map<string, UserPresence>>()
@@ -136,6 +147,35 @@ function handleConnection(socket: Socket) {
     // Ação realizada (enviar mensagem, mudar status, etc)
     socket.on('action_performed', (data: { contactId: string; action: string }) => {
         handleActionPerformed(socket.id, data.contactId, data.action)
+    })
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // Novos Eventos de Supervisão Global - Todas as Páginas
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    // Página carregada
+    socket.on('page_loaded', (data: { route: string; state: any }) => {
+        handlePageLoaded(socket.id, data.route, data.state)
+    })
+
+    // Estado completo da página atualizado
+    socket.on('page_state', (data: { route: string; state: any }) => {
+        handlePageState(socket.id, data.route, data.state)
+    })
+
+    // Clique do usuário
+    socket.on('user_click', (data: { x: number; y: number; element: string; className: string; text: string; route: string; timestamp: string }) => {
+        handleUserClick(socket.id, data)
+    })
+
+    // Scroll do usuário
+    socket.on('user_scroll', (data: { x: number; y: number; route: string; timestamp: string }) => {
+        handleUserScrollGlobal(socket.id, data)
+    })
+
+    // Input do usuário
+    socket.on('user_input', (data: { field: string; value: string; type: string; route: string; timestamp: string }) => {
+        handleUserInputGlobal(socket.id, data)
     })
 
     // Desconexão
@@ -410,6 +450,160 @@ function handleActionPerformed(socketId: string, contactId: string, action: stri
         contactId,
         action,
         organizationId,
+    })
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Novos Handlers para Supervisão Global - Todas as Páginas
+// ═══════════════════════════════════════════════════════════════════════════
+
+/**
+ * Handler de página carregada
+ */
+function handlePageLoaded(socketId: string, route: string, state: any) {
+    const socketInfo = socketMap.get(socketId)
+    if (!socketInfo) return
+
+    const { userId, organizationId } = socketInfo
+    const presence = presenceMap.get(organizationId)?.get(userId)
+    if (!presence) return
+
+    // Atualiza rota e estado
+    presence.currentRoute = route
+    if (!presence.screenState) presence.screenState = {}
+    presence.screenState.pageState = state
+    presence.lastActivity = new Date()
+
+    console.log(`📄 [SUPERVISÃO] ${userId} carregou página: ${route}`)
+
+    // Broadcast para supervisores
+    broadcastToOrganization(organizationId, {
+        type: 'page_loaded',
+        userId,
+        route,
+        state,
+        organizationId,
+    })
+}
+
+/**
+ * Handler de estado da página atualizado
+ */
+function handlePageState(socketId: string, route: string, state: any) {
+    const socketInfo = socketMap.get(socketId)
+    if (!socketInfo) return
+
+    const { userId, organizationId } = socketInfo
+    const presence = presenceMap.get(organizationId)?.get(userId)
+    if (!presence) return
+
+    // Atualiza estado da página
+    if (!presence.screenState) presence.screenState = {}
+    presence.screenState.pageState = state
+    presence.lastActivity = new Date()
+
+    // Broadcast para supervisores
+    broadcastToOrganization(organizationId, {
+        type: 'page_state',
+        userId,
+        route,
+        state,
+        organizationId,
+    })
+}
+
+/**
+ * Handler de clique do usuário
+ */
+function handleUserClick(socketId: string, data: { x: number; y: number; element: string; className: string; text: string; route: string; timestamp: string }) {
+    const socketInfo = socketMap.get(socketId)
+    if (!socketInfo) return
+
+    const { userId, organizationId } = socketInfo
+    const presence = presenceMap.get(organizationId)?.get(userId)
+    if (!presence) return
+
+    // Atualiza lista de cliques (mantém últimos 5)
+    if (!presence.screenState) presence.screenState = {}
+    if (!presence.screenState.clicks) presence.screenState.clicks = []
+
+    presence.screenState.clicks = [
+        ...presence.screenState.clicks.slice(-4), // Mantém últimos 4
+        { x: data.x, y: data.y, timestamp: data.timestamp, element: data.element }
+    ]
+    presence.lastActivity = new Date()
+
+    console.log(`🖱️ [SUPERVISÃO] ${userId} clicou em ${data.element} em ${data.route}`)
+
+    // Broadcast para supervisores
+    broadcastToOrganization(organizationId, {
+        type: 'user_click',
+        userId,
+        x: data.x,
+        y: data.y,
+        element: data.element,
+        route: data.route,
+        organizationId,
+        timestamp: data.timestamp,
+    })
+}
+
+/**
+ * Handler de scroll global do usuário
+ */
+function handleUserScrollGlobal(socketId: string, data: { x: number; y: number; route: string; timestamp: string }) {
+    const socketInfo = socketMap.get(socketId)
+    if (!socketInfo) return
+
+    const { userId, organizationId } = socketInfo
+    const presence = presenceMap.get(organizationId)?.get(userId)
+    if (!presence) return
+
+    // Atualiza posição atual de scroll
+    if (!presence.screenState) presence.screenState = {}
+    presence.screenState.currentScroll = { x: data.x, y: data.y }
+    presence.lastActivity = new Date()
+
+    // Broadcast para supervisores (throttled no frontend)
+    broadcastToOrganization(organizationId, {
+        type: 'user_scroll_global',
+        userId,
+        x: data.x,
+        y: data.y,
+        route: data.route,
+        organizationId,
+        timestamp: data.timestamp,
+    })
+}
+
+/**
+ * Handler de input global do usuário
+ */
+function handleUserInputGlobal(socketId: string, data: { field: string; value: string; type: string; route: string; timestamp: string }) {
+    const socketInfo = socketMap.get(socketId)
+    if (!socketInfo) return
+
+    const { userId, organizationId } = socketInfo
+    const presence = presenceMap.get(organizationId)?.get(userId)
+    if (!presence) return
+
+    // Atualiza form data
+    if (!presence.screenState) presence.screenState = {}
+    if (!presence.screenState.formData) presence.screenState.formData = {}
+    presence.screenState.formData[data.field] = data.value
+    presence.lastActivity = new Date()
+
+    console.log(`⌨️ [SUPERVISÃO] ${userId} digitou em ${data.field} em ${data.route}`)
+
+    // Broadcast para supervisores
+    broadcastToOrganization(organizationId, {
+        type: 'user_input_global',
+        userId,
+        field: data.field,
+        value: data.value,
+        route: data.route,
+        organizationId,
+        timestamp: data.timestamp,
     })
 }
 
