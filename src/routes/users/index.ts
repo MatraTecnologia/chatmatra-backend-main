@@ -18,6 +18,7 @@ export default async function (app: FastifyInstance) {
                         email: { type: 'string' },
                         image: { type: 'string', nullable: true },
                         signature: { type: 'string', nullable: true },
+                        signaturePosition: { type: 'string' },
                         createdAt: { type: 'string' },
                     },
                 },
@@ -33,6 +34,7 @@ export default async function (app: FastifyInstance) {
                 email: true,
                 image: true,
                 signature: true,
+                signaturePosition: true,
                 createdAt: true,
             },
         })
@@ -138,9 +140,12 @@ export default async function (app: FastifyInstance) {
             description: 'Assinatura suporta variáveis: {{name}}, {{email}}, {{phone}}',
             body: {
                 type: 'object',
-                required: ['signature'],
                 properties: {
                     signature: { type: 'string' },
+                    signaturePosition: {
+                        type: 'string',
+                        enum: ['pre', 'post']
+                    },
                 },
             },
             response: {
@@ -148,18 +153,28 @@ export default async function (app: FastifyInstance) {
                     type: 'object',
                     properties: {
                         signature: { type: 'string', nullable: true },
+                        signaturePosition: { type: 'string' },
                     },
                 },
             },
         },
     }, async (request) => {
-        const { signature } = request.body as { signature: string }
+        const { signature, signaturePosition } = request.body as {
+            signature?: string
+            signaturePosition?: string
+        }
         const userId = request.session.user.id
 
         const updated = await prisma.user.update({
             where: { id: userId },
-            data: { signature: signature || null },
-            select: { signature: true },
+            data: {
+                ...(signature !== undefined && { signature: signature || null }),
+                ...(signaturePosition !== undefined && { signaturePosition }),
+            },
+            select: {
+                signature: true,
+                signaturePosition: true,
+            },
         })
 
         return updated

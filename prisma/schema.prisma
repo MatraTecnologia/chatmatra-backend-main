@@ -9,15 +9,16 @@ datasource db {
 // ─── Better Auth ────────────────────────────────────────────────────────────
 
 model User {
-  id            String   @id @default(cuid())
-  name          String
-  email         String   @unique
-  emailVerified Boolean  @default(false)
-  image         String?
-  phone         String?  // Telefone do usuário (opcional)
-  signature     String?  // Assinatura eletrônica do usuário (suporta variáveis: {{name}}, {{email}}, {{phone}})
-  createdAt     DateTime @default(now())
-  updatedAt     DateTime @updatedAt
+  id                String   @id @default(cuid())
+  name              String
+  email             String   @unique
+  emailVerified     Boolean  @default(false)
+  image             String?
+  phone             String?  // Telefone do usuário (opcional)
+  signature         String?  // Assinatura eletrônica do usuário (suporta variáveis: {{name}}, {{email}}, {{phone}})
+  signaturePosition String   @default("post") // 'pre' (antes da mensagem) | 'post' (depois da mensagem)
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
 
   sessions         Session[]
   accounts         Account[]
