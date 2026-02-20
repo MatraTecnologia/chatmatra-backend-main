@@ -3,19 +3,6 @@ import { requireAuth } from '../../lib/session.js'
 import { prisma } from '../../lib/prisma.js'
 import { publish } from '../../lib/widgetSse.js'
 
-// ─── Helper: Substitui variáveis na assinatura ────────────────────────────────
-function applySignature(content: string, signature: string, signaturePosition: 'pre' | 'post', user: { name: string; email: string; phone?: string | null }): string {
-    const processedSignature = signature
-        .replace(/\{\{name\}\}/g, user.name)
-        .replace(/\{\{email\}\}/g, user.email)
-        .replace(/\{\{phone\}\}/g, user.phone || user.email)
-
-    if (signaturePosition === 'pre') {
-        return `${processedSignature}\n\n${content}`
-    }
-    return `${content}\n\n${processedSignature}`
-}
-
 export default async function (app: FastifyInstance) {
 
     // GET /messages?contactId=&limit=&before=<ISO-date>
@@ -146,39 +133,9 @@ export default async function (app: FastifyInstance) {
         const isMember = await prisma.member.findFirst({ where: { organizationId: orgId, userId } })
         if (!isMember) return reply.status(403).send({ error: 'Sem permissão.' })
 
-        // ─── ASSINATURA AUTOMÁTICA: Adiciona assinatura se outbound + text + usuário tem assinatura configurada ───
-        // Verifica se a assinatura já foi aplicada no frontend antes de adicionar
-        let finalContent = body.content
-        if (body.direction === 'outbound' && body.type === 'text') {
-            const user = await prisma.user.findUnique({
-                where: { id: userId },
-                select: { signature: true, signaturePosition: true, name: true, email: true, phone: true },
-            })
-
-            if (user?.signature) {
-                // Processa a assinatura para verificar se já está presente
-                const processedSignature = user.signature
-                    .replace(/\{\{name\}\}/g, user.name)
-                    .replace(/\{\{email\}\}/g, user.email)
-                    .replace(/\{\{phone\}\}/g, user.phone || user.email)
-
-                // Só adiciona se a assinatura processada não estiver presente no conteúdo
-                const signatureAlreadyPresent = body.content.includes(processedSignature)
-
-                if (!signatureAlreadyPresent) {
-                    finalContent = applySignature(
-                        body.content,
-                        user.signature,
-                        (user.signaturePosition as 'pre' | 'post') || 'post',
-                        {
-                            name: user.name,
-                            email: user.email,
-                            phone: user.phone,
-                        }
-                    )
-                }
-            }
-        }
+        // ─── ASSINATURA: Aplicada apenas no frontend antes de enviar ───
+        // O backend não modifica o conteúdo para evitar adicionar assinatura em mensagens
+        // vindas de webhooks (mensagens enviadas diretamente pelo WhatsApp do usuário)
 
         const message = await prisma.message.create({
             data: {
@@ -187,7 +144,7 @@ export default async function (app: FastifyInstance) {
                 channelId:      body.channelId,
                 direction:      body.direction,
                 type:           body.type,
-                content:        finalContent, // Usa finalContent que pode conter assinatura
+                content:        body.content, // Salva conteúdo original sem modificação
                 status:         body.status ?? 'sent',
                 externalId:     body.externalId,
             },
