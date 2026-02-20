@@ -17,6 +17,13 @@ export type UserPresence = {
     lastActivity: Date
     connectedAt: Date
     socketId: string
+    // Estado da tela para supervisão
+    screenState?: {
+        messages?: any[]
+        inputText?: string
+        scrollPosition?: number
+        lastAction?: string
+    }
 }
 
 export type PresenceEvent =
@@ -27,6 +34,11 @@ export type PresenceEvent =
     | { type: 'user_viewing'; userId: string; contactId: string; organizationId: string }
     | { type: 'user_typing'; userId: string; contactId: string; isTyping: boolean; organizationId: string }
     | { type: 'presence_update'; users: UserPresence[]; organizationId: string }
+    // Novos eventos para supervisão em tempo real
+    | { type: 'screen_update'; userId: string; contactId: string; messages: any[]; organizationId: string }
+    | { type: 'input_update'; userId: string; contactId: string; text: string; organizationId: string }
+    | { type: 'scroll_update'; userId: string; contactId: string; position: number; organizationId: string }
+    | { type: 'action_performed'; userId: string; contactId: string; action: string; organizationId: string }
 
 // Map: organizationId -> userId -> UserPresence
 const presenceMap = new Map<string, Map<string, UserPresence>>()
@@ -100,6 +112,30 @@ function handleConnection(socket: Socket) {
     // Status manual (online, away)
     socket.on('status', (data: { status: 'online' | 'away' }) => {
         updateUserStatus(socket.id, data.status)
+    })
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // Eventos de Supervisão - Estado da Tela em Tempo Real
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    // Atualização de mensagens visualizadas
+    socket.on('screen_update', (data: { contactId: string; messages: any[] }) => {
+        handleScreenUpdate(socket.id, data.contactId, data.messages)
+    })
+
+    // Atualização de texto sendo digitado (preview para supervisor)
+    socket.on('input_update', (data: { contactId: string; text: string }) => {
+        handleInputUpdate(socket.id, data.contactId, data.text)
+    })
+
+    // Atualização de posição de scroll
+    socket.on('scroll_update', (data: { contactId: string; position: number }) => {
+        handleScrollUpdate(socket.id, data.contactId, data.position)
+    })
+
+    // Ação realizada (enviar mensagem, mudar status, etc)
+    socket.on('action_performed', (data: { contactId: string; action: string }) => {
+        handleActionPerformed(socket.id, data.contactId, data.action)
     })
 
     // Desconexão
@@ -271,6 +307,110 @@ function updateUserStatus(socketId: string, status: 'online' | 'away') {
         : { type: 'user_active', userId, organizationId }
 
     broadcastToOrganization(organizationId, event)
+}
+
+/**
+ * Atualiza mensagens visualizadas (para supervisão)
+ */
+function handleScreenUpdate(socketId: string, contactId: string, messages: any[]) {
+    const socketInfo = socketMap.get(socketId)
+    if (!socketInfo) return
+
+    const { userId, organizationId } = socketInfo
+    const presence = presenceMap.get(organizationId)?.get(userId)
+    if (!presence) return
+
+    // Atualiza estado da tela
+    if (!presence.screenState) presence.screenState = {}
+    presence.screenState.messages = messages
+    presence.lastActivity = new Date()
+
+    // Broadcast para supervisores
+    broadcastToOrganization(organizationId, {
+        type: 'screen_update',
+        userId,
+        contactId,
+        messages,
+        organizationId,
+    })
+}
+
+/**
+ * Atualiza texto sendo digitado (para supervisão)
+ */
+function handleInputUpdate(socketId: string, contactId: string, text: string) {
+    const socketInfo = socketMap.get(socketId)
+    if (!socketInfo) return
+
+    const { userId, organizationId } = socketInfo
+    const presence = presenceMap.get(organizationId)?.get(userId)
+    if (!presence) return
+
+    // Atualiza estado da tela
+    if (!presence.screenState) presence.screenState = {}
+    presence.screenState.inputText = text
+    presence.lastActivity = new Date()
+
+    // Broadcast para supervisores
+    broadcastToOrganization(organizationId, {
+        type: 'input_update',
+        userId,
+        contactId,
+        text,
+        organizationId,
+    })
+}
+
+/**
+ * Atualiza posição de scroll (para supervisão)
+ */
+function handleScrollUpdate(socketId: string, contactId: string, position: number) {
+    const socketInfo = socketMap.get(socketId)
+    if (!socketInfo) return
+
+    const { userId, organizationId } = socketInfo
+    const presence = presenceMap.get(organizationId)?.get(userId)
+    if (!presence) return
+
+    // Atualiza estado da tela
+    if (!presence.screenState) presence.screenState = {}
+    presence.screenState.scrollPosition = position
+    presence.lastActivity = new Date()
+
+    // Broadcast para supervisores (com throttle, não enviar toda mudança)
+    broadcastToOrganization(organizationId, {
+        type: 'scroll_update',
+        userId,
+        contactId,
+        position,
+        organizationId,
+    })
+}
+
+/**
+ * Registra ação realizada (para supervisão)
+ */
+function handleActionPerformed(socketId: string, contactId: string, action: string) {
+    const socketInfo = socketMap.get(socketId)
+    if (!socketInfo) return
+
+    const { userId, organizationId } = socketInfo
+    const presence = presenceMap.get(organizationId)?.get(userId)
+    if (!presence) return
+
+    // Atualiza estado da tela
+    if (!presence.screenState) presence.screenState = {}
+    presence.screenState.lastAction = action
+    presence.lastActivity = new Date()
+
+    // Broadcast para supervisores
+    broadcastToOrganization(organizationId, {
+        type: 'action_performed',
+        userId,
+        contactId,
+        action,
+        organizationId,
+    })
 }
 
 /**
