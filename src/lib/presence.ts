@@ -1,7 +1,7 @@
 // ─── Sistema de Presença em Tempo Real com Socket.io ─────────────────────────
 // Sistema completo de rastreamento de usuários online com WebSocket bidirecional
 
-import type { Server as SocketServer, Socket } from 'socket.io'
+import { Server as SocketServer, type Socket } from 'socket.io'
 import type { Server as HTTPServer } from 'http'
 
 export type UserPresence = {
