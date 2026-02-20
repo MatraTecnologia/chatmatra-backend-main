@@ -104,5 +104,49 @@ export async function requireAuth(request: FastifyRequest, reply: FastifyReply) 
         }
     } else {
         console.log('[MULTI-TENANT] ℹ️ Ignorando detecção (localhost ou hostname inválido)')
+
+        // MODO DESENVOLVIMENTO: Em localhost, usa organização específica configurada
+        if (process.env.NODE_ENV === 'development' || hostname === 'localhost' || hostname?.startsWith('localhost:') || hostname?.startsWith('127.0.0.1')) {
+            console.log('[MULTI-TENANT] 🔧 Modo desenvolvimento ativado')
+
+            let devOrgId = process.env.DEV_ORGANIZATION_ID
+
+            // Se não tiver variável de ambiente, busca org chamada "Desenvolvimento" ou "Dev"
+            if (!devOrgId) {
+                const devOrg = await prisma.organization.findFirst({
+                    where: {
+                        OR: [
+                            { name: { contains: 'Desenvolvimento', mode: 'insensitive' } },
+                            { name: { contains: 'Dev', mode: 'insensitive' } },
+                            { domain: 'localhost' },
+                        ]
+                    },
+                    select: { id: true, name: true },
+                })
+
+                if (devOrg) {
+                    devOrgId = devOrg.id
+                    console.log('[MULTI-TENANT] 🔧 [DEV] Organização dev encontrada:', devOrg.name)
+                } else {
+                    console.log('[MULTI-TENANT] ⚠️ [DEV] Nenhuma organização dev encontrada. Configure DEV_ORGANIZATION_ID no .env')
+                }
+            } else {
+                console.log('[MULTI-TENANT] 🔧 [DEV] Usando DEV_ORGANIZATION_ID do .env')
+            }
+
+            if (devOrgId) {
+                // Verifica se o usuário é membro dessa organização
+                const member = await prisma.member.findUnique({
+                    where: { organizationId_userId: { organizationId: devOrgId, userId: session.user.id } },
+                })
+
+                if (member) {
+                    request.organizationId = devOrgId
+                    console.log('[MULTI-TENANT] ✅ [DEV] organizationId injetado:', devOrgId)
+                } else {
+                    console.log('[MULTI-TENANT] ⚠️ [DEV] Usuário não é membro da organização dev configurada')
+                }
+            }
+        }
     }
 }
