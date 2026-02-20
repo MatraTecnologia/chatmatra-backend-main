@@ -4,13 +4,16 @@ import { prisma } from '../../lib/prisma.js'
 import { publish } from '../../lib/widgetSse.js'
 
 // ─── Helper: Substitui variáveis na assinatura ────────────────────────────────
-function applySignature(content: string, signature: string, user: { name: string; email: string; phone?: string | null }): string {
+function applySignature(content: string, signature: string, signaturePosition: 'pre' | 'post', user: { name: string; email: string; phone?: string | null }): string {
     const processedSignature = signature
         .replace(/\{\{name\}\}/g, user.name)
         .replace(/\{\{email\}\}/g, user.email)
         .replace(/\{\{phone\}\}/g, user.phone || user.email)
 
-    return `${content}\n\nassinatura:\n${processedSignature}`
+    if (signaturePosition === 'pre') {
+        return `${processedSignature}\n\n${content}`
+    }
+    return `${content}\n\n${processedSignature}`
 }
 
 export default async function (app: FastifyInstance) {
@@ -144,19 +147,36 @@ export default async function (app: FastifyInstance) {
         if (!isMember) return reply.status(403).send({ error: 'Sem permissão.' })
 
         // ─── ASSINATURA AUTOMÁTICA: Adiciona assinatura se outbound + text + usuário tem assinatura configurada ───
+        // Verifica se a assinatura já foi aplicada no frontend antes de adicionar
         let finalContent = body.content
         if (body.direction === 'outbound' && body.type === 'text') {
             const user = await prisma.user.findUnique({
                 where: { id: userId },
-                select: { signature: true, name: true, email: true, phone: true },
+                select: { signature: true, signaturePosition: true, name: true, email: true, phone: true },
             })
 
             if (user?.signature) {
-                finalContent = applySignature(body.content, user.signature, {
-                    name: user.name,
-                    email: user.email,
-                    phone: user.phone,
-                })
+                // Processa a assinatura para verificar se já está presente
+                const processedSignature = user.signature
+                    .replace(/\{\{name\}\}/g, user.name)
+                    .replace(/\{\{email\}\}/g, user.email)
+                    .replace(/\{\{phone\}\}/g, user.phone || user.email)
+
+                // Só adiciona se a assinatura processada não estiver presente no conteúdo
+                const signatureAlreadyPresent = body.content.includes(processedSignature)
+
+                if (!signatureAlreadyPresent) {
+                    finalContent = applySignature(
+                        body.content,
+                        user.signature,
+                        (user.signaturePosition as 'pre' | 'post') || 'post',
+                        {
+                            name: user.name,
+                            email: user.email,
+                            phone: user.phone,
+                        }
+                    )
+                }
             }
         }
 
