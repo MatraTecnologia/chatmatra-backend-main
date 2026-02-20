@@ -107,31 +107,41 @@ export default async function (app: FastifyInstance) {
         const agentStats = await Promise.all(members.map(async (member) => {
             const userId = member.userId
 
-            const [assignedContacts, resolvedContacts, messagesSent] = await Promise.all([
-                // Contatos atualmente atribuídos ao agente
-                prisma.contact.count({
-                    where: { organizationId: orgId, assignedToId: userId },
-                }),
-                // Contatos resolvidos atribuídos ao agente (atualizados no período)
-                prisma.contact.count({
-                    where: {
-                        organizationId: orgId,
-                        assignedToId: userId,
-                        convStatus: 'resolved',
-                        updatedAt: { gte: since },
-                    },
-                }),
-                // Mensagens outbound nos contatos atribuídos ao agente no período
-                prisma.message.count({
-                    where: {
-                        organizationId: orgId,
-                        direction: 'outbound',
-                        type: 'text',
-                        createdAt: { gte: since },
-                        contact: { assignedToId: userId },
-                    },
-                }),
-            ])
+            // Buscar todos os contatos do agente para análise detalhada
+            const contacts = await prisma.contact.findMany({
+                where: {
+                    organizationId: orgId,
+                    assignedToId: userId,
+                },
+                select: {
+                    id: true,
+                    createdAt: true,
+                    updatedAt: true,
+                    convStatus: true,
+                },
+            })
+
+            // Contar contatos atribuídos no período (criados ou atualizados no período)
+            const assignedContacts = contacts.filter(c =>
+                c.createdAt >= since || c.updatedAt >= since
+            ).length
+
+            // Contar contatos resolvidos no período
+            // Considera resolvidos se: status = resolved E updatedAt no período
+            const resolvedContacts = contacts.filter(c =>
+                c.convStatus === 'resolved' && c.updatedAt >= since
+            ).length
+
+            // Mensagens outbound nos contatos atribuídos ao agente no período
+            const messagesSent = await prisma.message.count({
+                where: {
+                    organizationId: orgId,
+                    direction: 'outbound',
+                    type: 'text',
+                    createdAt: { gte: since },
+                    contact: { assignedToId: userId },
+                },
+            })
 
             return {
                 userId,
