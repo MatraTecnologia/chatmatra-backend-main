@@ -38,11 +38,28 @@ async function resolveTemplate(
     }
 
     // Adiciona variáveis da organização
+    // Se a logo for base64, adiciona o prefixo data:image correto
+    let logoSrc = ''
+    if (organization?.logo) {
+        // Verifica se já tem o prefixo data:image
+        if (organization.logo.startsWith('data:image')) {
+            logoSrc = organization.logo
+        }
+        // Se começar com http/https, é uma URL
+        else if (organization.logo.startsWith('http')) {
+            logoSrc = organization.logo
+        }
+        // Caso contrário, assume que é base64 puro e adiciona o prefixo
+        else {
+            logoSrc = `data:image/png;base64,${organization.logo}`
+        }
+    }
+
     const allVars = {
         ...vars,
         '{{orgName}}': organization?.name ?? 'Matra Chat',
         '{{domain}}': organization?.domain ?? process.env.FRONTEND_URL ?? 'matrachat.com',
-        '{{logo}}': organization?.logo ?? '',
+        '{{logo}}': logoSrc,
         '{{logoDisplay}}': organization?.logo ? '' : 'display:none;',
     }
 
