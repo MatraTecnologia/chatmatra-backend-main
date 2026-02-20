@@ -533,21 +533,49 @@ export default async function (app: FastifyInstance) {
             fromMe:    message.direction === 'outbound',
         }
 
+        // Log detalhado dos dados da mídia
+        log.divider('MEDIA REQUEST')
+        log.info('📦 Dados da mensagem:')
+        log.info(`  - Message ID: ${message.id}`)
+        log.info(`  - External ID (WhatsApp Key): ${message.externalId}`)
+        log.info(`  - Contact External ID (remoteJid): ${message.contact.externalId}`)
+        log.info(`  - Direction: ${message.direction}`)
+        log.info(`  - Type: ${message.type}`)
+        log.info(`  - Instance: ${cfg.instanceName}`)
+        log.info('🔑 WhatsApp Key:')
+        log.info(`  ${JSON.stringify(waKey, null, 2)}`)
+
+        const mediaEndpoint = `/chat/getBase64FromMediaMessage/${cfg.instanceName}`
+        const requestBody = {
+            message: {
+                key: {
+                    id: waKey.id,
+                    remoteJid: waKey.remoteJid,
+                    fromMe: waKey.fromMe,
+                }
+            },
+            convertToMp4: false,
+        }
+
+        log.info('🌐 Evolution API Request:')
+        log.info(`  - URL: ${cfg.evolutionUrl}${mediaEndpoint}`)
+        log.info(`  - Body: ${JSON.stringify(requestBody, null, 2)}`)
+
         try {
             // Tenta buscar base64 da mídia via Evolution API
-            // Endpoint: POST /message/:instance/media/base64
-            const result = await evolutionFetch(cfg, `/message/${cfg.instanceName}/media/base64`, {
+            // Endpoint: POST /chat/getBase64FromMediaMessage/{instance}
+            const result = await evolutionFetch(cfg, mediaEndpoint, {
                 method: 'POST',
-                body: JSON.stringify({
-                    message: {
-                        key: waKey,
-                    },
-                    convertToMp4: false,
-                }),
+                body: JSON.stringify(requestBody),
             })
 
+            log.info(`📡 Evolution API Response Status: ${result.status}`)
+
             if (!result.ok) {
-                log.error(`Evolution API erro ao buscar mídia: ${result.status} - ${JSON.stringify(result.data)}`)
+                log.error(`❌ Evolution API erro ao buscar mídia:`)
+                log.error(`  - Status: ${result.status}`)
+                log.error(`  - Response: ${JSON.stringify(result.data, null, 2)}`)
+                log.divider()
                 return reply.status(502).send({
                     error: 'Não foi possível obter a mídia da Evolution API.',
                     details: result.data,
@@ -555,17 +583,31 @@ export default async function (app: FastifyInstance) {
             }
 
             if (!result.data?.base64) {
-                log.error('Evolution API retornou sem base64')
+                log.error('❌ Evolution API retornou sem base64')
+                log.error(`  - Response Data: ${JSON.stringify(result.data, null, 2)}`)
+                log.divider()
                 return reply.status(502).send({ error: 'Mídia não disponível na Evolution API.' })
             }
 
-            return {
+            const mediaData = {
                 base64:    result.data.base64 as string,
                 mediaType: result.data.mediaType as string ?? message.type,
                 mimeType:  result.data.mimetype  as string ?? 'application/octet-stream',
             }
+
+            log.ok('✅ Mídia obtida com sucesso!')
+            log.info(`  - Media Type: ${mediaData.mediaType}`)
+            log.info(`  - MIME Type: ${mediaData.mimeType}`)
+            log.info(`  - Base64 Length: ${mediaData.base64.length} caracteres`)
+            log.info(`  - Tamanho estimado: ~${Math.round(mediaData.base64.length * 0.75 / 1024)} KB`)
+            log.divider()
+
+            return mediaData
         } catch (error) {
-            log.error(`Erro ao buscar mídia: ${error}`)
+            log.error(`❌ Erro ao buscar mídia:`)
+            log.error(`  - Error: ${error}`)
+            log.error(`  - Stack: ${error instanceof Error ? error.stack : 'N/A'}`)
+            log.divider()
             return reply.status(502).send({ error: 'Erro ao comunicar com Evolution API.' })
         }
     })
@@ -738,6 +780,21 @@ export default async function (app: FastifyInstance) {
                             externalId: key.id,
                         },
                     })
+
+                    // Log armazenamento da mensagem
+                    log.divider('MESSAGE STORED')
+                    log.ok('💾 Mensagem armazenada no banco:')
+                    log.info(`  - Message ID: ${savedMsg.id}`)
+                    log.info(`  - External ID (WhatsApp Key): ${key.id}`)
+                    log.info(`  - Contact ID: ${contact.id}`)
+                    log.info(`  - Contact External ID: ${contact.externalId}`)
+                    log.info(`  - Type: ${msgType}`)
+                    log.info(`  - Direction: ${direction}`)
+                    log.info(`  - Content Preview: ${content.substring(0, 100)}${content.length > 100 ? '...' : ''}`)
+                    if (msgType !== 'text' && msgType !== 'note') {
+                        log.info(`  - 📎 Mensagem de mídia - para baixar use: GET /channels/${channel.id}/messages/${savedMsg.id}/media`)
+                    }
+                    log.divider()
 
                     // Publica mensagem em tempo real para os agentes
                     // Se contato é novo, inclui dados para o frontend adicionar na lista
