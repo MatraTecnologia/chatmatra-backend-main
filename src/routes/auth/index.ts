@@ -5,7 +5,13 @@ import { auth } from '../../lib/auth.js'
 export default async function (app: FastifyInstance) {
     app.all('/*', async (request, reply) => {
         const url = `${request.protocol}://${request.hostname}${request.url}`
+
+        // Detecta callbacks que devem retornar HTML ao invés de JSON
         const isMagicLinkCallback = request.url.includes('magic-link') || request.url.includes('callback')
+        const isEmailVerification = request.url.includes('verify-email') && request.method === 'GET'
+        const isResetPasswordCallback = request.url.includes('reset-password') && request.method === 'GET' && request.url.includes('token=')
+        const isHtmlCallback = isMagicLinkCallback || isEmailVerification || isResetPasswordCallback
+
         const acceptsHtml = request.headers.accept?.includes('text/html')
 
         const headers = new Headers()
@@ -26,8 +32,8 @@ export default async function (app: FastifyInstance) {
         } catch (err) {
             request.log.error(err, 'Better Auth handler error')
 
-            // Se for callback de magic link e aceita HTML, mostra página de erro bonita
-            if (isMagicLinkCallback && acceptsHtml) {
+            // Se for callback HTML (magic link, verify email, reset password) e aceita HTML, mostra página de erro bonita
+            if (isHtmlCallback && acceptsHtml) {
                 return reply.type('text/html').send(generateErrorPage('internal_error'))
             }
 
@@ -36,8 +42,8 @@ export default async function (app: FastifyInstance) {
 
         const responseText = await response.text()
 
-        // Se for callback de magic link com erro e aceita HTML
-        if (isMagicLinkCallback && acceptsHtml && (response.status >= 400 || responseText.includes('error'))) {
+        // Se for callback HTML com erro e aceita HTML
+        if (isHtmlCallback && acceptsHtml && (response.status >= 400 || responseText.includes('error'))) {
             let errorType = 'unknown'
 
             try {
@@ -53,9 +59,24 @@ export default async function (app: FastifyInstance) {
             return reply.type('text/html').send(generateErrorPage(errorType))
         }
 
-        // Se for callback de magic link com sucesso e aceita HTML
-        if (isMagicLinkCallback && acceptsHtml && response.status === 200 && request.method === 'GET') {
-            return reply.type('text/html').send(generateSuccessPage())
+        // Se for callback HTML com sucesso e aceita HTML
+        if (isHtmlCallback && acceptsHtml && response.status === 200 && request.method === 'GET') {
+            // Para reset password, redireciona para a página de reset com o token
+            if (isResetPasswordCallback) {
+                const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000'
+                const tokenMatch = request.url.match(/token=([^&]+)/)
+                const token = tokenMatch ? tokenMatch[1] : null
+
+                if (token) {
+                    return reply.type('text/html').send(generateRedirectPage(`${frontendUrl}/reset-password?token=${token}`, 'Redirecionando...'))
+                }
+            }
+
+            // Para outros callbacks (magic link, verify email), mostra página de sucesso e redireciona
+            return reply.type('text/html').send(generateSuccessPage(
+                isEmailVerification ? 'E-mail verificado!' : 'Login realizado!',
+                isEmailVerification ? 'Sua conta foi verificada com sucesso!' : 'Você está sendo redirecionado...'
+            ))
         }
 
         reply.status(response.status)
@@ -65,7 +86,7 @@ export default async function (app: FastifyInstance) {
     })
 }
 
-function generateSuccessPage(): string {
+function generateSuccessPage(title: string = 'Login realizado!', message: string = 'Você está sendo redirecionado...'): string {
     const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000'
     return `
 <!DOCTYPE html>
@@ -73,7 +94,7 @@ function generateSuccessPage(): string {
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Login realizado! - MatraChat</title>
+    <title>${title} - MatraChat</title>
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body {
@@ -142,8 +163,8 @@ function generateSuccessPage(): string {
 <body>
     <div class="container">
         <div class="icon">✓</div>
-        <h1>Login realizado com sucesso!</h1>
-        <p>Você está sendo redirecionado...</p>
+        <h1>${title}</h1>
+        <p>${message}</p>
         <div class="spinner"></div>
         <p style="font-size: 14px; color: #718096;">Se não funcionar, <a href="${frontendUrl}" style="color: #667eea; font-weight: 600;">clique aqui</a>.</p>
         <div class="footer"><strong>MatraChat</strong> - Comunicação inteligente</div>
@@ -280,6 +301,73 @@ function generateErrorPage(errorType: string): string {
             <strong>MatraChat</strong> - Comunicação inteligente
         </div>
     </div>
+</body>
+</html>
+    `
+}
+
+function generateRedirectPage(redirectUrl: string, message: string = 'Redirecionando...'): string {
+    return `
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Redirecionando - MatraChat</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+        }
+        .container {
+            background: white;
+            border-radius: 16px;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+            max-width: 500px;
+            width: 100%;
+            padding: 48px 32px;
+            text-align: center;
+        }
+        .spinner {
+            width: 60px;
+            height: 60px;
+            border: 5px solid #e2e8f0;
+            border-top: 5px solid #667eea;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+            margin: 0 auto 24px;
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+        h1 {
+            color: #1a202c;
+            font-size: 24px;
+            margin-bottom: 16px;
+            font-weight: 600;
+        }
+        p {
+            color: #718096;
+            font-size: 14px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="spinner"></div>
+        <h1>${message}</h1>
+        <p>Se não funcionar automaticamente, <a href="${redirectUrl}" style="color: #667eea; font-weight: 600;">clique aqui</a>.</p>
+    </div>
+    <script>
+        window.location.href = '${redirectUrl}';
+    </script>
 </body>
 </html>
     `
