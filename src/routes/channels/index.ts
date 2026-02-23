@@ -536,6 +536,7 @@ export default async function (app: FastifyInstance) {
         }
 
         const instanceState: string = result.data?.instance?.state ?? 'unknown'
+        const instanceNumber: string | undefined = result.data?.instance?.owner ?? undefined
 
         // Sincroniza status no banco
         const statusMap: Record<string, string> = {
@@ -544,11 +545,24 @@ export default async function (app: FastifyInstance) {
             close: 'disconnected',
         }
         const newStatus = statusMap[instanceState] ?? channel.status
-        if (newStatus !== channel.status) {
-            await prisma.channel.update({ where: { id }, data: { status: newStatus } })
+
+        // Atualiza status e telefone se houver mudanças
+        const needsUpdate = newStatus !== channel.status || (instanceNumber && !cfg.phone)
+        if (needsUpdate) {
+            const updatedConfig = {
+                ...cfg,
+                ...(instanceNumber ? { phone: instanceNumber } : {}),
+            }
+            await prisma.channel.update({
+                where: { id },
+                data: {
+                    status: newStatus,
+                    config: updatedConfig as Prisma.InputJsonValue
+                }
+            })
         }
 
-        return { channelStatus: newStatus, instanceState }
+        return { channelStatus: newStatus, instanceState, phone: instanceNumber ?? cfg.phone }
     })
 
     // POST /channels/:id/whatsapp/send — envia mensagem de texto ou mídia via Evolution API
