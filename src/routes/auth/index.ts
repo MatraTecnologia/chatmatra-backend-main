@@ -1,5 +1,6 @@
 import type { FastifyInstance } from 'fastify'
 import { auth } from '../../lib/auth.js'
+import { sendEmailVerificationConfirmation } from '../../lib/mail.js'
 
 // Repassa todas as requisições /auth/* para o Better Auth
 export default async function (app: FastifyInstance) {
@@ -69,6 +70,24 @@ export default async function (app: FastifyInstance) {
 
                 if (token) {
                     return reply.type('text/html').send(generateRedirectPage(`${frontendUrl}/reset-password?token=${token}`, 'Redirecionando...'))
+                }
+            }
+
+            // Para verificação de email, envia email de confirmação
+            if (isEmailVerification) {
+                // Extrai o email da resposta ou do token
+                try {
+                    const data = JSON.parse(responseText)
+                    const userEmail = data.user?.email || data.email
+
+                    if (userEmail) {
+                        // Envia o email de confirmação de forma assíncrona (não bloqueia a resposta)
+                        sendEmailVerificationConfirmation(userEmail).catch((err) => {
+                            request.log.error(err, 'Erro ao enviar email de confirmação de verificação')
+                        })
+                    }
+                } catch (err) {
+                    request.log.warn(err, 'Não foi possível extrair email para enviar confirmação de verificação')
                 }
             }
 
