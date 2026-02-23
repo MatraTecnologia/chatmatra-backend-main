@@ -529,14 +529,18 @@ export default async function (app: FastifyInstance) {
         if (!isMember) return reply.status(403).send({ error: 'Sem permissão.' })
 
         const cfg = channel.config as WhatsAppConfig
-        const result = await evolutionFetch(cfg, `/instance/connectionState/${cfg.instanceName}`)
+
+        // Usa fetchInstances para buscar informações completas da instância
+        const result = await evolutionFetch(cfg, `/instance/fetchInstances/${cfg.instanceName}`)
 
         if (!result.ok) {
             return { channelStatus: channel.status, instanceState: 'unknown' }
         }
 
-        const instanceState: string = result.data?.instance?.state ?? 'unknown'
-        const instanceNumber: string | undefined = result.data?.instance?.owner ?? undefined
+        // fetchInstances retorna informações mais completas incluindo owner (telefone)
+        const instanceData = result.data
+        const instanceState: string = instanceData?.instance?.state ?? 'unknown'
+        const instanceNumber: string | undefined = instanceData?.instance?.owner ?? undefined
 
         // Sincroniza status no banco
         const statusMap: Record<string, string> = {
