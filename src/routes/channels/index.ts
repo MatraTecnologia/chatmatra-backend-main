@@ -28,6 +28,16 @@ type WhatsAppConfig = {
     phone?: string
 }
 
+// ─── Helpers WhatsApp Business API (Meta) ─────────────────────────────────────
+
+type WhatsAppBusinessConfig = {
+    phoneNumberId: string       // ID do número de telefone do Meta Business
+    accessToken: string         // Token de acesso permanente
+    webhookVerifyToken: string  // Token de verificação do webhook
+    businessAccountId?: string  // ID da conta comercial (opcional)
+    phone?: string              // Número de telefone formatado
+}
+
 async function evolutionFetch(
     config: Pick<WhatsAppConfig, 'evolutionUrl' | 'evolutionApiKey'>,
     path: string,
@@ -39,6 +49,28 @@ async function evolutionFetch(
         headers: {
             'Content-Type': 'application/json',
             'apikey': config.evolutionApiKey,
+            ...options.headers,
+        },
+    })
+    const text = await res.text()
+    try {
+        return { ok: res.ok, status: res.status, data: JSON.parse(text) }
+    } catch {
+        return { ok: res.ok, status: res.status, data: text }
+    }
+}
+
+async function whatsappBusinessFetch(
+    config: Pick<WhatsAppBusinessConfig, 'accessToken'>,
+    path: string,
+    options: RequestInit = {}
+) {
+    const url = `https://graph.facebook.com/v21.0${path}`
+    const res = await fetch(url, {
+        ...options,
+        headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${config.accessToken}`,
             ...options.headers,
         },
     })
@@ -122,7 +154,7 @@ export default async function (app: FastifyInstance) {
         })
     })
 
-    // POST /channels — cria canal do tipo 'api' ou 'whatsapp'
+    // POST /channels — cria canal do tipo 'api', 'whatsapp' ou 'whatsapp-business'
     app.post('/', {
         preHandler: requireAuth,
         schema: {
@@ -133,19 +165,28 @@ export default async function (app: FastifyInstance) {
                 required: ['name', 'type'],
                 properties: {
                     name: { type: 'string', minLength: 1 },
-                    type: { type: 'string', enum: ['api', 'whatsapp'] },
-                    // WhatsApp — instanceName gerado automaticamente no servidor
+                    type: { type: 'string', enum: ['api', 'whatsapp', 'whatsapp-business'] },
+                    // WhatsApp Evolution API
                     evolutionUrl: { type: 'string' },
                     evolutionApiKey: { type: 'string' },
+                    // WhatsApp Business API (Meta)
+                    phoneNumberId: { type: 'string' },
+                    accessToken: { type: 'string' },
+                    webhookVerifyToken: { type: 'string' },
+                    businessAccountId: { type: 'string' },
                 },
             },
         },
     }, async (request, reply) => {
         const body = request.body as {
             name: string
-            type: 'api' | 'whatsapp'
+            type: 'api' | 'whatsapp' | 'whatsapp-business'
             evolutionUrl?: string
             evolutionApiKey?: string
+            phoneNumberId?: string
+            accessToken?: string
+            webhookVerifyToken?: string
+            businessAccountId?: string
         }
         const userId = request.session.user.id
 
@@ -171,8 +212,17 @@ export default async function (app: FastifyInstance) {
             config = {
                 evolutionUrl,
                 evolutionApiKey,
-                // instanceName gerado automaticamente: slug(nome) + 8 chars hex
                 instanceName: generateInstanceName(body.name),
+            }
+        } else if (body.type === 'whatsapp-business') {
+            if (!body.phoneNumberId || !body.accessToken || !body.webhookVerifyToken) {
+                return reply.status(400).send({ error: 'phoneNumberId, accessToken e webhookVerifyToken são obrigatórios para WhatsApp Business API.' })
+            }
+            config = {
+                phoneNumberId: body.phoneNumberId,
+                accessToken: body.accessToken,
+                webhookVerifyToken: body.webhookVerifyToken,
+                businessAccountId: body.businessAccountId,
             }
         }
 
@@ -182,8 +232,9 @@ export default async function (app: FastifyInstance) {
                 name: body.name,
                 type: body.type,
                 // Canais API não precisam de conexão externa — já nascem ativos.
-                // Canais WhatsApp começam como 'pending' até o QR code ser escaneado.
-                status: body.type === 'api' ? 'connected' : 'pending',
+                // WhatsApp Business API também já nasce ativo (não precisa QR code)
+                // Canais WhatsApp (Evolution) começam como 'pending' até o QR code ser escaneado.
+                status: body.type === 'whatsapp' ? 'pending' : 'connected',
                 config: config as Prisma.InputJsonValue,
             },
         })
@@ -1310,5 +1361,363 @@ export default async function (app: FastifyInstance) {
             const j = c.remoteJid ?? c.id?.remote ?? ''
             return j.includes('@s.whatsapp.net') || j.includes('@c.us')
         }).length }
+    })
+
+    // ═══════════════════════════════════════════════════════════════════════════════
+    // WHATSAPP BUSINESS API (META) ROUTES
+    // ═══════════════════════════════════════════════════════════════════════════════
+
+    // POST /channels/:id/whatsapp-business/send — envia mensagem via WhatsApp Business API
+    app.post('/:id/whatsapp-business/send', {
+        preHandler: requireAuth,
+        schema: {
+            tags: ['Channels'],
+            summary: 'Envia mensagem via WhatsApp Business API (Meta)',
+            params: { type: 'object', properties: { id: { type: 'string' } } },
+            body: {
+                type: 'object',
+                required: ['to'],
+                properties: {
+                    to: { type: 'string' }, // número no formato internacional (sem +)
+                    text: { type: 'string', minLength: 1 },
+                    mediaUrl: { type: 'string' },
+                    mediaType: { type: 'string', enum: ['image', 'video', 'audio', 'document'] },
+                    caption: { type: 'string' },
+                },
+                oneOf: [
+                    { required: ['text'] },
+                    { required: ['mediaUrl', 'mediaType'] },
+                ],
+            },
+        },
+    }, async (request, reply) => {
+        const { id } = request.params as { id: string }
+        const { to, text, mediaUrl, mediaType, caption } = request.body as {
+            to: string
+            text?: string
+            mediaUrl?: string
+            mediaType?: 'image' | 'video' | 'audio' | 'document'
+            caption?: string
+        }
+        const userId = request.session.user.id
+
+        const channel = await prisma.channel.findUnique({ where: { id } })
+        if (!channel || channel.type !== 'whatsapp-business') {
+            return reply.status(404).send({ error: 'Canal WhatsApp Business não encontrado.' })
+        }
+
+        const isMember = await prisma.member.findFirst({ where: { organizationId: channel.organizationId, userId } })
+        if (!isMember) return reply.status(403).send({ error: 'Sem permissão.' })
+
+        if (channel.status !== 'connected') {
+            return reply.status(409).send({ error: 'Canal não está conectado.' })
+        }
+
+        const cfg = channel.config as WhatsAppBusinessConfig
+
+        let result
+        const messaging_product = 'whatsapp'
+        const recipient_type = 'individual'
+
+        if (text) {
+            // Mensagem de texto
+            result = await whatsappBusinessFetch(cfg, `/${cfg.phoneNumberId}/messages`, {
+                method: 'POST',
+                body: JSON.stringify({
+                    messaging_product,
+                    recipient_type,
+                    to,
+                    type: 'text',
+                    text: { body: text },
+                }),
+            })
+        } else if (mediaUrl && mediaType) {
+            // Mensagem de mídia
+            const mediaBody: Record<string, unknown> = { link: mediaUrl }
+            if (caption) mediaBody.caption = caption
+
+            result = await whatsappBusinessFetch(cfg, `/${cfg.phoneNumberId}/messages`, {
+                method: 'POST',
+                body: JSON.stringify({
+                    messaging_product,
+                    recipient_type,
+                    to,
+                    type: mediaType,
+                    [mediaType]: mediaBody,
+                }),
+            })
+        } else {
+            return reply.status(400).send({ error: 'É necessário enviar text ou (mediaUrl + mediaType).' })
+        }
+
+        if (!result.ok) {
+            log.error(`WhatsApp Business API erro ao enviar: ${JSON.stringify(result.data)}`)
+            return reply.status(502).send({ error: 'Falha ao enviar mensagem.', detail: result.data })
+        }
+
+        return reply.status(200).send({ ok: true, data: result.data })
+    })
+
+    // GET /channels/whatsapp-business/webhook — verificação do webhook Meta
+    app.get('/whatsapp-business/webhook', {
+        schema: {
+            summary: 'Verificação do webhook WhatsApp Business API',
+            querystring: {
+                type: 'object',
+                properties: {
+                    'hub.mode': { type: 'string' },
+                    'hub.verify_token': { type: 'string' },
+                    'hub.challenge': { type: 'string' },
+                },
+            },
+        } as never,
+    }, async (request, reply) => {
+        const query = request.query as {
+            'hub.mode'?: string
+            'hub.verify_token'?: string
+            'hub.challenge'?: string
+        }
+
+        const mode = query['hub.mode']
+        const token = query['hub.verify_token']
+        const challenge = query['hub.challenge']
+
+        if (mode === 'subscribe') {
+            // Busca o canal pelo verify token
+            const channels = await prisma.channel.findMany({
+                where: { type: 'whatsapp-business' },
+            })
+
+            const channel = channels.find((ch) => {
+                const cfg = ch.config as WhatsAppBusinessConfig | null
+                return cfg?.webhookVerifyToken === token
+            })
+
+            if (channel && challenge) {
+                log.info(`Webhook WhatsApp Business verificado: ${channel.name}`)
+                return reply.status(200).send(challenge)
+            }
+        }
+
+        return reply.status(403).send('Forbidden')
+    })
+
+    // POST /channels/whatsapp-business/webhook — recebe mensagens do Meta
+    app.post('/whatsapp-business/webhook', {
+        schema: {
+            summary: 'Webhook para receber mensagens WhatsApp Business API',
+        } as never,
+    }, async (request, reply) => {
+        const body = request.body as {
+            object?: string
+            entry?: Array<{
+                id?: string
+                changes?: Array<{
+                    value?: {
+                        messaging_product?: string
+                        metadata?: {
+                            display_phone_number?: string
+                            phone_number_id?: string
+                        }
+                        contacts?: Array<{
+                            profile?: { name?: string }
+                            wa_id?: string
+                        }>
+                        messages?: Array<{
+                            from?: string
+                            id?: string
+                            timestamp?: string
+                            type?: string
+                            text?: { body?: string }
+                            image?: { caption?: string; id?: string; mime_type?: string }
+                            video?: { caption?: string; id?: string; mime_type?: string }
+                            audio?: { id?: string; mime_type?: string }
+                            document?: { caption?: string; filename?: string; id?: string; mime_type?: string }
+                        }>
+                        statuses?: Array<{
+                            id?: string
+                            status?: string
+                            timestamp?: string
+                            recipient_id?: string
+                        }>
+                    }
+                    field?: string
+                }>
+            }>
+        }
+
+        if (body.object !== 'whatsapp_business_account') {
+            return reply.status(200).send({ ok: true })
+        }
+
+        for (const entry of body.entry ?? []) {
+            for (const change of entry.changes ?? []) {
+                if (change.field !== 'messages') continue
+
+                const value = change.value
+                if (!value?.metadata?.phone_number_id) continue
+
+                const phoneNumberId = value.metadata.phone_number_id
+
+                // Encontra o canal pelo phoneNumberId
+                const channels = await prisma.channel.findMany({
+                    where: { type: 'whatsapp-business' },
+                })
+
+                const channel = channels.find((ch) => {
+                    const cfg = ch.config as WhatsAppBusinessConfig | null
+                    return cfg?.phoneNumberId === phoneNumberId
+                })
+
+                if (!channel) {
+                    log.warn(`Webhook: phoneNumberId "${phoneNumberId}" não encontrado`)
+                    continue
+                }
+
+                // Processa mensagens recebidas
+                for (const message of value.messages ?? []) {
+                    const from = message.from ?? ''
+                    const msgId = message.id ?? ''
+                    const timestamp = message.timestamp ?? ''
+                    const type = message.type ?? 'text'
+
+                    if (!from || !msgId) continue
+
+                    // Detecta tipo e conteúdo
+                    let content = ''
+                    let msgType: 'text' | 'image' | 'video' | 'audio' | 'document' = 'text'
+
+                    if (type === 'text' && message.text?.body) {
+                        content = message.text.body
+                        msgType = 'text'
+                    } else if (type === 'image') {
+                        content = message.image?.caption ?? ''
+                        msgType = 'image'
+                    } else if (type === 'video') {
+                        content = message.video?.caption ?? ''
+                        msgType = 'video'
+                    } else if (type === 'audio') {
+                        content = ''
+                        msgType = 'audio'
+                    } else if (type === 'document') {
+                        content = message.document?.filename ?? message.document?.caption ?? ''
+                        msgType = 'document'
+                    }
+
+                    // Busca ou cria contato
+                    const contactName = value.contacts?.find((c) => c.wa_id === from)?.profile?.name ?? from
+                    let contact = await prisma.contact.findFirst({
+                        where: { organizationId: channel.organizationId, externalId: from },
+                    })
+
+                    let isNewContact = false
+                    if (!contact) {
+                        contact = await prisma.contact.create({
+                            data: {
+                                organizationId: channel.organizationId,
+                                channelId: channel.id,
+                                externalId: from,
+                                phone: `+${from}`,
+                                name: contactName,
+                                convStatus: 'pending',
+                            },
+                        })
+                        isNewContact = true
+                    }
+
+                    // Salva mensagem
+                    const createdAt = timestamp ? new Date(Number(timestamp) * 1000) : new Date()
+                    const savedMsg = await prisma.message.create({
+                        data: {
+                            organizationId: channel.organizationId,
+                            contactId: contact.id,
+                            channelId: channel.id,
+                            direction: 'inbound',
+                            type: msgType,
+                            content,
+                            status: 'sent',
+                            externalId: msgId,
+                            createdAt,
+                        },
+                    })
+
+                    // Publica em tempo real
+                    publishToOrg(channel.organizationId, {
+                        type: 'new_message',
+                        contactId: contact.id,
+                        channelId: channel.id,
+                        externalId: contact.externalId,
+                        contactName: contact.name,
+                        contactAvatarUrl: contact.avatarUrl,
+                        message: {
+                            id: savedMsg.id,
+                            direction: 'inbound',
+                            type: msgType,
+                            content,
+                            status: 'sent',
+                            createdAt: savedMsg.createdAt.toISOString(),
+                        },
+                        ...(isNewContact ? {
+                            contact: {
+                                id: contact.id,
+                                name: contact.name,
+                                phone: contact.phone,
+                                avatarUrl: contact.avatarUrl,
+                                externalId: contact.externalId,
+                                channelId: contact.channelId,
+                                convStatus: 'pending',
+                                createdAt: contact.createdAt.toISOString(),
+                            },
+                        } : {}),
+                    })
+
+                    // Atualiza status do contato
+                    if (!isNewContact) {
+                        const needsStatusUpdate = !contact.convStatus || contact.convStatus === 'resolved'
+                        const newStatus = needsStatusUpdate ? 'pending' : contact.convStatus
+                        await prisma.contact.update({
+                            where: { id: contact.id },
+                            data: { convStatus: newStatus },
+                        })
+                        if (needsStatusUpdate) {
+                            publishToOrg(channel.organizationId, {
+                                type: 'conv_updated',
+                                contactId: contact.id,
+                                convStatus: 'pending',
+                                assignedToId: contact.assignedToId,
+                                assignedToName: null,
+                            })
+                        }
+                    }
+                }
+
+                // Processa status de mensagens enviadas
+                for (const status of value.statuses ?? []) {
+                    const msgId = status.id
+                    const statusValue = status.status // sent, delivered, read, failed
+
+                    if (!msgId || !statusValue) continue
+
+                    // Atualiza status da mensagem no banco
+                    const statusMap: Record<string, string> = {
+                        sent: 'sent',
+                        delivered: 'delivered',
+                        read: 'read',
+                        failed: 'error',
+                    }
+                    const newStatus = statusMap[statusValue] ?? 'sent'
+
+                    await prisma.message.updateMany({
+                        where: {
+                            organizationId: channel.organizationId,
+                            externalId: msgId,
+                        },
+                        data: { status: newStatus },
+                    })
+                }
+            }
+        }
+
+        return reply.status(200).send({ ok: true })
     })
 }
