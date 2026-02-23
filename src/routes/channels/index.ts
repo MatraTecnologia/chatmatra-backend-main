@@ -537,10 +537,22 @@ export default async function (app: FastifyInstance) {
             return { channelStatus: channel.status, instanceState: 'unknown' }
         }
 
-        // fetchInstances retorna informações mais completas incluindo owner (telefone)
-        const instanceData = result.data
-        const instanceState: string = instanceData?.instance?.state ?? 'unknown'
-        const instanceNumber: string | undefined = instanceData?.instance?.owner ?? undefined
+        // fetchInstances pode retornar array ou objeto direto
+        const instanceData = Array.isArray(result.data) ? result.data[0] : result.data
+
+        // Tenta diferentes estruturas de resposta
+        const instanceState: string =
+            instanceData?.instance?.state ??
+            instanceData?.state ??
+            'unknown'
+
+        const instanceNumber: string | undefined =
+            instanceData?.instance?.owner ??
+            instanceData?.owner ??
+            undefined
+
+        // Log para debug (remover depois de testar)
+        log.info(`Instance data: ${JSON.stringify(instanceData)}`)
 
         // Sincroniza status no banco
         const statusMap: Record<string, string> = {
