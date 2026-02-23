@@ -44,7 +44,10 @@ export default async function (app: FastifyInstance) {
         preHandler: requireAuth,
     }, async (request, reply) => {
         const userId = request.session.user.id
-        const orgId = request.organizationId
+
+        // Tenta pegar orgId da query string primeiro, depois do request
+        const { orgId: queryOrgId } = request.query as { orgId?: string }
+        const orgId = queryOrgId || request.organizationId
 
         // DEBUG: Logs para investigar o problema
         console.log('=== DEBUG FACEBOOK OAUTH ===')
@@ -55,11 +58,27 @@ export default async function (app: FastifyInstance) {
             referer: request.headers.referer,
         })
         console.log('User ID:', userId)
-        console.log('Organization ID:', orgId)
+        console.log('Organization ID from query:', queryOrgId)
+        console.log('Organization ID from request:', request.organizationId)
+        console.log('Final Organization ID:', orgId)
         console.log('===========================')
 
         if (!orgId) {
             return reply.status(400).send({ error: 'Organização não encontrada.' })
+        }
+
+        // Verifica se o usuário é membro da organização
+        const member = await prisma.member.findUnique({
+            where: {
+                organizationId_userId: {
+                    organizationId: orgId,
+                    userId: userId
+                }
+            },
+        })
+
+        if (!member) {
+            return reply.status(403).send({ error: 'Acesso negado a esta organização.' })
         }
 
         // Busca credenciais do Facebook App da organização
