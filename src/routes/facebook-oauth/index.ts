@@ -133,20 +133,55 @@ export default async function (app: FastifyInstance) {
 
         const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000'
 
+        // Helper para retornar erro com postMessage
+        const sendError = (errorCode: string) => {
+            return reply.type('text/html').send(`
+                <!DOCTYPE html>
+                <html>
+                <head>
+                    <title>Erro OAuth</title>
+                    <style>
+                        body { font-family: system-ui; display: flex; align-items: center; justify-content: center; height: 100vh; margin: 0; background: #f5f5f5; }
+                        .error { text-align: center; }
+                        .error h1 { color: #ef4444; font-size: 24px; margin-bottom: 8px; }
+                        .error p { color: #6b7280; font-size: 14px; }
+                    </style>
+                </head>
+                <body>
+                    <div class="error">
+                        <h1>✕ Erro na conexão</h1>
+                        <p>Fechando...</p>
+                    </div>
+                    <script>
+                        if (window.opener) {
+                            window.opener.postMessage({
+                                type: 'OAUTH_ERROR',
+                                error: '${errorCode}'
+                            }, '${frontendUrl}');
+                            setTimeout(() => window.close(), 1500);
+                        } else {
+                            window.location.href = '${frontendUrl}/channels?oauth_error=${errorCode}';
+                        }
+                    </script>
+                </body>
+                </html>
+            `)
+        }
+
         // Usuário negou permissões
         if (error) {
             app.log.warn(`Facebook OAuth error: ${error} - ${error_description}`)
-            return reply.redirect(`${frontendUrl}/channels?oauth_error=${error}`)
+            return sendError(error)
         }
 
         if (!code || !state) {
-            return reply.redirect(`${frontendUrl}/channels?oauth_error=missing_params`)
+            return sendError('missing_params')
         }
 
         // Valida o state (CSRF protection)
         const stateData = oauthStateStore.get(state)
         if (!stateData) {
-            return reply.redirect(`${frontendUrl}/channels?oauth_error=invalid_state`)
+            return sendError('invalid_state')
         }
 
         // Remove o state usado
@@ -159,7 +194,7 @@ export default async function (app: FastifyInstance) {
         })
 
         if (!organization?.fbAppId || !organization?.fbAppSecret) {
-            return reply.redirect(`${frontendUrl}/channels?oauth_error=config_missing`)
+            return sendError('config_missing')
         }
 
         const appId = organization.fbAppId
@@ -178,7 +213,7 @@ export default async function (app: FastifyInstance) {
             if (!tokenResponse.ok) {
                 const errorText = await tokenResponse.text()
                 app.log.error(`Facebook token exchange failed: ${errorText}`)
-                return reply.redirect(`${frontendUrl}/channels?oauth_error=token_exchange_failed`)
+                return sendError('token_exchange_failed')
             }
 
             const tokenData = await tokenResponse.json() as FacebookOAuthTokenResponse
@@ -192,13 +227,13 @@ export default async function (app: FastifyInstance) {
             const businessAccountsResponse = await fetch(businessAccountsUrl.toString())
             if (!businessAccountsResponse.ok) {
                 app.log.error('Failed to fetch business accounts')
-                return reply.redirect(`${frontendUrl}/channels?oauth_error=no_business_accounts`)
+                return sendError('no_business_accounts')
             }
 
             const businessAccountsData = await businessAccountsResponse.json() as { data: FacebookBusinessAccount[] }
 
             if (!businessAccountsData.data || businessAccountsData.data.length === 0) {
-                return reply.redirect(`${frontendUrl}/channels?oauth_error=no_business_accounts`)
+                return sendError('no_business_accounts')
             }
 
             // Busca números de WhatsApp disponíveis para cada conta de negócio
@@ -227,7 +262,7 @@ export default async function (app: FastifyInstance) {
             }
 
             if (allPhoneNumbers.length === 0) {
-                return reply.redirect(`${frontendUrl}/channels?oauth_error=no_phone_numbers`)
+                return sendError('no_phone_numbers')
             }
 
             // Salva os dados na sessão (temporariamente)
@@ -251,12 +286,42 @@ export default async function (app: FastifyInstance) {
                 timestamp: Date.now(),
             } as any)
 
-            // Redireciona para o frontend com o session key
-            return reply.redirect(`${frontendUrl}/channels?oauth_session=${sessionKey}`)
+            // Envia postMessage para a janela pai e fecha o popup
+            return reply.type('text/html').send(`
+                <!DOCTYPE html>
+                <html>
+                <head>
+                    <title>OAuth Sucesso</title>
+                    <style>
+                        body { font-family: system-ui; display: flex; align-items: center; justify-content: center; height: 100vh; margin: 0; background: #f5f5f5; }
+                        .success { text-align: center; }
+                        .success h1 { color: #10b981; font-size: 24px; margin-bottom: 8px; }
+                        .success p { color: #6b7280; font-size: 14px; }
+                    </style>
+                </head>
+                <body>
+                    <div class="success">
+                        <h1>✓ Conectado com sucesso!</h1>
+                        <p>Redirecionando...</p>
+                    </div>
+                    <script>
+                        if (window.opener) {
+                            window.opener.postMessage({
+                                type: 'OAUTH_SUCCESS',
+                                oauthSession: '${sessionKey}'
+                            }, '${frontendUrl}');
+                            setTimeout(() => window.close(), 1000);
+                        } else {
+                            window.location.href = '${frontendUrl}/channels?oauth_session=${sessionKey}';
+                        }
+                    </script>
+                </body>
+                </html>
+            `)
 
         } catch (err) {
             app.log.error(err, 'Facebook OAuth callback error')
-            return reply.redirect(`${frontendUrl}/channels?oauth_error=unknown`)
+            return sendError('unknown')
         }
     })
 
