@@ -46,6 +46,10 @@ RUN chmod +x ./docker-entrypoint.sh
 
 # Porta padrão 80 — sobrescreva com a env var PORT se precisar
 ENV PORT=80
+
+# Fix para conexões TLS/SSL com Facebook
+ENV NODE_TLS_REJECT_UNAUTHORIZED=0
+
 EXPOSE 80
 
 ENTRYPOINT ["./docker-entrypoint.sh"]
