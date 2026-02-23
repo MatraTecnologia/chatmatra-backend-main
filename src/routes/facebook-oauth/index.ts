@@ -46,6 +46,18 @@ export default async function (app: FastifyInstance) {
         const userId = request.session.user.id
         const orgId = request.organizationId
 
+        // DEBUG: Logs para investigar o problema
+        console.log('=== DEBUG FACEBOOK OAUTH ===')
+        console.log('Headers:', {
+            origin: request.headers.origin,
+            host: request.headers.host,
+            'x-forwarded-host': request.headers['x-forwarded-host'],
+            referer: request.headers.referer,
+        })
+        console.log('User ID:', userId)
+        console.log('Organization ID:', orgId)
+        console.log('===========================')
+
         if (!orgId) {
             return reply.status(400).send({ error: 'Organização não encontrada.' })
         }
