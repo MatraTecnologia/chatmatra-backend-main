@@ -32,6 +32,95 @@ async function evolutionFetch(
 
 export default async function (app: FastifyInstance) {
 
+    // GET /contacts/no-channel — lista contatos sem canal (apenas admin/owner)
+    app.get('/no-channel', {
+        preHandler: requireAuth,
+        schema: {
+            tags: ['Contacts'],
+            summary: 'Lista contatos sem canal (apenas admin/owner)',
+            querystring: {
+                type: 'object',
+                properties: {
+                    search: { type: 'string' },
+                    page:   { type: 'integer', minimum: 1, default: 1 },
+                    limit:  { type: 'integer', minimum: 1, maximum: 500, default: 30 },
+                },
+            },
+        },
+    }, async (request, reply) => {
+        const { search, page = 1, limit = 30 } = request.query as {
+            search?: string
+            page?: number
+            limit?: number
+        }
+        const userId = request.session.user.id
+
+        const orgId = request.organizationId
+        if (!orgId) {
+            return reply.status(400).send({ error: 'Nenhuma organização detectada para este domínio.' })
+        }
+
+        const isMember = await prisma.member.findFirst({ where: { organizationId: orgId, userId } })
+        if (!isMember) return reply.status(403).send({ error: 'Sem permissão.' })
+
+        // ─── APENAS ADMIN/OWNER podem ver contatos sem canal ───
+        const isAdminOrOwner = isMember.role === 'admin' || isMember.role === 'owner'
+        if (!isAdminOrOwner) {
+            return reply.status(403).send({ error: 'Apenas administradores podem acessar contatos sem canal.' })
+        }
+
+        const where = {
+            organizationId: orgId,
+            channelId: null,  // Apenas contatos SEM canal
+            ...(search
+                ? {
+                    OR: [
+                        { name:  { contains: search, mode: 'insensitive' as const } },
+                        { phone: { contains: search, mode: 'insensitive' as const } },
+                        { email: { contains: search, mode: 'insensitive' as const } },
+                    ],
+                }
+                : {}),
+        }
+
+        const [total, contacts] = await Promise.all([
+            prisma.contact.count({ where }),
+            prisma.contact.findMany({
+                where,
+                orderBy: { updatedAt: 'desc' },
+                skip: (page - 1) * limit,
+                take: limit,
+                select: {
+                    id: true,
+                    name: true,
+                    phone: true,
+                    email: true,
+                    avatarUrl: true,
+                    channelId: true,
+                    externalId: true,
+                    notes: true,
+                    convStatus: true,
+                    assignedToId: true,
+                    createdAt: true,
+                    updatedAt: true,
+                    channel: {
+                        select: { id: true, name: true, type: true, status: true },
+                    },
+                    tags: {
+                        select: {
+                            tag: { select: { id: true, name: true, color: true } },
+                        },
+                    },
+                    assignedTo: {
+                        select: { id: true, name: true, image: true },
+                    },
+                },
+            }),
+        ])
+
+        return { total, page, limit, contacts }
+    })
+
     // GET /contacts?search=&page=&limit=
     app.get('/', {
         preHandler: requireAuth,
@@ -79,6 +168,10 @@ export default async function (app: FastifyInstance) {
                     { assignedToId: userId },
                     { assignedToId: null },
                 ],
+            } : {}),
+            // Se não é admin/owner, ESCONDE contatos sem canal (channelId null)
+            ...(!isAdminOrOwner ? {
+                channelId: { not: null },
             } : {}),
             ...(hasMessages ? { messages: { some: {} } } : {}),
             ...(tagId ? { tags: { some: { tagId } } } : {}),
