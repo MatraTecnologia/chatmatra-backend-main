@@ -446,6 +446,68 @@ export default async function (app: FastifyInstance) {
         }
     })
 
+    // POST /channels/:id/whatsapp/sync-profile — sincroniza foto do perfil
+    app.post('/:id/whatsapp/sync-profile', {
+        preHandler: requireAuth,
+        schema: {
+            tags: ['Channels'],
+            summary: 'Sincroniza foto do perfil do canal WhatsApp',
+            params: { type: 'object', properties: { id: { type: 'string' } } },
+        },
+    }, async (request, reply) => {
+        const { id } = request.params as { id: string }
+        const userId = request.session.user.id
+
+        const channel = await prisma.channel.findUnique({ where: { id } })
+        if (!channel || channel.type !== 'whatsapp') {
+            return reply.status(404).send({ error: 'Canal WhatsApp não encontrado.' })
+        }
+
+        const isMember = await prisma.member.findFirst({ where: { organizationId: channel.organizationId, userId } })
+        if (!isMember) return reply.status(403).send({ error: 'Sem permissão.' })
+
+        if (channel.status !== 'connected') {
+            return reply.status(409).send({ error: 'Canal não está conectado.' })
+        }
+
+        const cfg = channel.config as WhatsAppConfig
+
+        if (!cfg.phone) {
+            return reply.status(400).send({ error: 'Canal não possui número de telefone configurado.' })
+        }
+
+        try {
+            const profileResult = await evolutionFetch(cfg, `/chat/fetchProfilePictureUrl/${cfg.instanceName}`, {
+                method: 'POST',
+                body: JSON.stringify({
+                    number: cfg.phone.replace(/\D/g, ''), // remove caracteres não numéricos
+                }),
+            })
+
+            if (profileResult.ok && profileResult.data?.profilePictureUrl) {
+                const updatedConfig = {
+                    ...(channel.config as Record<string, unknown>),
+                    profilePictureUrl: profileResult.data.profilePictureUrl,
+                }
+
+                await prisma.channel.update({
+                    where: { id },
+                    data: { config: updatedConfig as Prisma.InputJsonValue },
+                })
+
+                return {
+                    success: true,
+                    profilePictureUrl: profileResult.data.profilePictureUrl,
+                }
+            }
+
+            return reply.status(404).send({ error: 'Foto do perfil não encontrada.' })
+        } catch (err) {
+            log.error(`Erro ao buscar foto do perfil: ${err}`)
+            return reply.status(502).send({ error: 'Erro ao buscar foto do perfil da Evolution API.' })
+        }
+    })
+
     // GET /channels/:id/whatsapp/status — consulta status da instância
     app.get('/:id/whatsapp/status', {
         preHandler: requireAuth,
@@ -739,10 +801,30 @@ export default async function (app: FastifyInstance) {
         const newStatus = stateToStatus[instanceState]
 
         if (newStatus) {
+            const currentConfig = channel.config as Record<string, unknown>
             const updatedConfig = {
-                ...(channel.config as Record<string, unknown>),
+                ...currentConfig,
                 phone: dataObj?.number ?? (channel.config as WhatsAppConfig).phone,
             }
+
+            // Se conectou com sucesso, busca a foto do perfil
+            if (newStatus === 'connected' && dataObj?.number) {
+                try {
+                    const cfg = channel.config as WhatsAppConfig
+                    const profileResult = await evolutionFetch(cfg, `/chat/fetchProfilePictureUrl/${cfg.instanceName}`, {
+                        method: 'POST',
+                        body: JSON.stringify({
+                            number: dataObj.number.replace(/\D/g, ''), // remove caracteres não numéricos
+                        }),
+                    })
+                    if (profileResult.ok && profileResult.data?.profilePictureUrl) {
+                        updatedConfig.profilePictureUrl = profileResult.data.profilePictureUrl
+                    }
+                } catch (err) {
+                    log.warn(`Erro ao buscar foto do perfil do canal: ${err}`)
+                }
+            }
+
             await prisma.channel.update({
                 where: { id: channel.id },
                 data: { status: newStatus, config: updatedConfig as Prisma.InputJsonValue },
@@ -885,23 +967,30 @@ export default async function (app: FastifyInstance) {
             }
         }
 
-        // ── CONTACTS_UPSERT / CONTACTS_UPDATE: sincroniza nome do contato ────
+        // ── CONTACTS_UPSERT / CONTACTS_UPDATE: sincroniza nome e foto do contato ────
         if ((event === 'CONTACTS_UPSERT' || event === 'CONTACTS_UPDATE') && dataArr && dataArr.length > 0) {
             for (const waContact of dataArr) {
                 const jid = waContact.id ?? ''
                 if (!jid || (!jid.includes('@s.whatsapp.net') && !jid.includes('@c.us'))) continue
-                const newName = (waContact.name || waContact.pushName || '').trim()
-                if (!newName) continue
 
-                // Atualiza nome apenas se o contato existir e o nome for diferente
-                await prisma.contact.updateMany({
-                    where: {
-                        organizationId: channel.organizationId,
-                        externalId: jid,
-                        NOT: { name: newName },
-                    },
-                    data: { name: newName },
-                })
+                const newName = (waContact.name || waContact.pushName || '').trim()
+                const profilePictureUrl = waContact.profilePictureUrl
+
+                // Monta os dados para atualização
+                const updateData: Record<string, string> = {}
+                if (newName) updateData.name = newName
+                if (profilePictureUrl) updateData.avatarUrl = profilePictureUrl
+
+                // Atualiza contato se houver dados para atualizar
+                if (Object.keys(updateData).length > 0) {
+                    await prisma.contact.updateMany({
+                        where: {
+                            organizationId: channel.organizationId,
+                            externalId: jid,
+                        },
+                        data: updateData,
+                    })
+                }
             }
         }
 
