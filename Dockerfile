@@ -30,7 +30,8 @@ FROM node:22-alpine AS runner
 
 WORKDIR /app
 
-RUN apk add --no-cache openssl
+# Instala openssl, curl, ca-certificates e ferramentas de rede
+RUN apk add --no-cache openssl curl ca-certificates
 
 # Copia somente o necessário do builder
 COPY --from=builder /app/node_modules    ./node_modules
