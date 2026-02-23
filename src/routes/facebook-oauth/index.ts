@@ -212,7 +212,14 @@ export default async function (app: FastifyInstance) {
             const tokenResponse = await fetch(tokenUrl.toString())
             if (!tokenResponse.ok) {
                 const errorText = await tokenResponse.text()
-                app.log.error(`Facebook token exchange failed: ${errorText}`)
+                app.log.error({
+                    error: 'Facebook token exchange failed',
+                    status: tokenResponse.status,
+                    statusText: tokenResponse.statusText,
+                    response: errorText,
+                    appId: appId.slice(0, 10) + '...',
+                    redirectUri,
+                }, 'Token exchange error')
                 return sendError('token_exchange_failed')
             }
 
