@@ -530,29 +530,17 @@ export default async function (app: FastifyInstance) {
 
         const cfg = channel.config as WhatsAppConfig
 
-        // Usa fetchInstances para buscar informações completas da instância
+        // Busca informações da instância usando fetchInstances
         const result = await evolutionFetch(cfg, `/instance/fetchInstances/${cfg.instanceName}`)
 
         if (!result.ok) {
             return { channelStatus: channel.status, instanceState: 'unknown' }
         }
 
-        // fetchInstances pode retornar array ou objeto direto
-        const instanceData = Array.isArray(result.data) ? result.data[0] : result.data
-
-        // Tenta diferentes estruturas de resposta
-        const instanceState: string =
-            instanceData?.instance?.state ??
-            instanceData?.state ??
-            'unknown'
-
-        const instanceNumber: string | undefined =
-            instanceData?.instance?.owner ??
-            instanceData?.owner ??
-            undefined
-
-        // Log para debug (remover depois de testar)
-        log.info(`Instance data: ${JSON.stringify(instanceData)}`)
+        // A resposta de fetchInstances retorna a instância diretamente
+        const instanceData = result.data
+        const instanceState: string = instanceData?.instance?.state ?? 'unknown'
+        const instanceNumber: string | undefined = instanceData?.instance?.owner ?? undefined
 
         // Sincroniza status no banco
         const statusMap: Record<string, string> = {
