@@ -856,54 +856,45 @@ export default async function (app: FastifyInstance) {
             const currentConfig = channel.config as Record<string, unknown>
             const phoneNumber = dataObj?.number ?? (channel.config as WhatsAppConfig).phone
 
-            const updatedConfig = {
-                ...currentConfig,
-                phone: phoneNumber,
-            }
-
-            // Se conectou com sucesso, busca a foto do perfil
-            if (newStatus === 'connected' && phoneNumber) {
-                log.info(`🔍 Buscando foto do perfil para ${channel.name} (${phoneNumber})...`)
-                try {
-                    const cfg = channel.config as WhatsAppConfig
-                    const cleanNumber = phoneNumber.replace(/\D/g, '') // remove caracteres não numéricos
-
-                    const profileResult = await evolutionFetch(cfg, `/chat/fetchProfilePictureUrl/${cfg.instanceName}`, {
-                        method: 'POST',
-                        body: JSON.stringify({ number: cleanNumber }),
-                    })
-
-                    log.info(`📸 Resposta da foto do perfil: ${JSON.stringify(profileResult)}`)
-
-                    if (profileResult.ok && profileResult.data?.profilePictureUrl) {
-                        updatedConfig.profilePictureUrl = profileResult.data.profilePictureUrl
-                        log.info(`✅ Foto do perfil salva: ${profileResult.data.profilePictureUrl}`)
-                    } else {
-                        log.warn(`⚠️ Foto do perfil não encontrada para ${cleanNumber}`)
-                    }
-                } catch (err) {
-                    log.error(`❌ Erro ao buscar foto do perfil do canal: ${err}`)
-                }
-            }
-
+            // Salva status e telefone imediatamente — não espera pela foto do perfil
             await prisma.channel.update({
                 where: { id: channel.id },
-                data: { status: newStatus, config: updatedConfig as Prisma.InputJsonValue },
+                data: {
+                    status: newStatus,
+                    config: { ...currentConfig, phone: phoneNumber } as Prisma.InputJsonValue,
+                },
             })
-
             log.info(`✅ Canal ${channel.name} atualizado - Status: ${newStatus}, Phone: ${phoneNumber ?? 'N/A'}`)
+
+            // Busca foto do perfil em background (não bloqueia o webhook)
+            if (newStatus === 'connected' && phoneNumber) {
+                const cfg = channel.config as WhatsAppConfig
+                const cleanNumber = phoneNumber.replace(/\D/g, '')
+                evolutionFetch(cfg, `/chat/fetchProfilePictureUrl/${cfg.instanceName}`, {
+                    method: 'POST',
+                    body: JSON.stringify({ number: cleanNumber }),
+                }).then(async (profileResult) => {
+                    if (profileResult.ok && profileResult.data?.profilePictureUrl) {
+                        await prisma.channel.update({
+                            where: { id: channel.id },
+                            data: { config: { ...currentConfig, phone: phoneNumber, profilePictureUrl: profileResult.data.profilePictureUrl } as Prisma.InputJsonValue },
+                        })
+                        log.info(`✅ Foto do perfil salva para ${channel.name}`)
+                    }
+                }).catch((err: unknown) => log.warn(`⚠️ Foto do perfil falhou: ${err}`))
+            }
         }
 
-        // ── MESSAGES_UPSERT: enfileira para processamento assíncrono ────────
+        // ── MESSAGES_UPSERT: enfileira sem bloquear o webhook ───────────────
         if (event === 'MESSAGES_UPSERT' && dataObj?.key) {
-            await messageQueue.add('process-message', {
+            messageQueue.add('process-message', {
                 channelId:      channel.id,
                 organizationId: channel.organizationId,
                 channelName:    channel.name,
                 key:            dataObj.key,
                 message:        dataObj.message,
                 pushName:       dataObj.pushName,
-            })
+            }).catch((err: unknown) => log.error(`[Webhook] Falha ao enfileirar mensagem: ${err}`))
         }
 
         // ── CONTACTS_UPSERT / CONTACTS_UPDATE: sincroniza nome e foto do contato ────
@@ -1652,7 +1643,7 @@ export default async function (app: FastifyInstance) {
 
                     const contactName = value.contacts?.find((c) => c.wa_id === from)?.profile?.name ?? from
 
-                    await messageQueue.add('process-wa-business-message', {
+                    messageQueue.add('process-wa-business-message', {
                         source: 'whatsapp-business',
                         channelId: channel.id,
                         organizationId: channel.organizationId,
@@ -1662,7 +1653,7 @@ export default async function (app: FastifyInstance) {
                         msgType,
                         content,
                         contactName,
-                    })
+                    }).catch((err: unknown) => log.error(`[WA Business Webhook] Falha ao enfileirar: ${err}`))
                 }
 
                 // Processa status de mensagens enviadas
