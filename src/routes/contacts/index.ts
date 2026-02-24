@@ -407,7 +407,7 @@ export default async function (app: FastifyInstance) {
             method: 'POST',
             body: JSON.stringify({
                 where: { key: { remoteJid: contact.externalId } },
-                limit: 200,
+                // Sem limit: busca todo o histórico disponível na Evolution API
             }),
         })
 
