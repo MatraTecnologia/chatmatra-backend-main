@@ -405,20 +405,41 @@ select.mc-phone-country:focus { border-color: var(--mc-primary); }
         } catch (_) { /* ignore */ }
     }
 
-    function connectSse() {
-        if (eventSource) eventSource.close()
-        const url = apiBase + '/widget/sse/' + contactId + '?key=' + encodeURIComponent(apiKey)
-        eventSource = new EventSource(url)
-        eventSource.addEventListener('message', (e) => {
-            try {
-                const msg = JSON.parse(e.data)
-                // SSE só entrega respostas do agente (outbound) — não duplicar mensagens do visitante
+    function connectSocket() {
+        if (widgetSocket) { widgetSocket.disconnect(); widgetSocket = null }
+
+        function doConnect() {
+            widgetSocket = window.io(apiBase, {
+                transports: ['websocket', 'polling'],
+                reconnection: true,
+                reconnectionDelay: 3000,
+            })
+
+            widgetSocket.on('connect', () => {
+                widgetSocket.emit('widget_connect', { key: apiKey, contactId })
+            })
+
+            // Reconnect: re-join room after socket.io auto-reconnects
+            widgetSocket.on('reconnect', () => {
+                widgetSocket.emit('widget_connect', { key: apiKey, contactId })
+            })
+
+            widgetSocket.on('widget_message', (msg) => {
+                // Só exibe respostas do agente (outbound) — não duplicar mensagens do visitante
                 if (msg.direction === 'outbound') appendMessage(msg)
-            } catch (_) { /* ignore */ }
-        })
-        eventSource.onerror = () => {
-            // EventSource auto-reconnects; nothing to do
+            })
         }
+
+        // socket.io-client é carregado sob demanda do próprio servidor
+        if (typeof window.io !== 'undefined') {
+            doConnect()
+            return
+        }
+        const scr = document.createElement('script')
+        scr.src = apiBase + '/socket.io/socket.io.js'
+        scr.onload = doConnect
+        scr.onerror = () => console.warn('[MatraChat] Falha ao carregar socket.io-client')
+        document.head.appendChild(scr)
     }
 
     async function sendMessage(content) {
@@ -454,7 +475,7 @@ select.mc-phone-country:focus { border-color: var(--mc-primary); }
     // ── Close ────────────────────────────────────────────────────────────────
 
     function closeWidget() {
-        if (eventSource) { eventSource.close(); eventSource = null }
+        if (widgetSocket) { widgetSocket.disconnect(); widgetSocket = null }
         removeWidget()
         state = 'closed'
         messagesEl = null
