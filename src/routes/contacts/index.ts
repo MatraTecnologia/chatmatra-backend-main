@@ -350,6 +350,137 @@ export default async function (app: FastifyInstance) {
         }
     })
 
+    // POST /contacts/:id/sync-messages — importa histórico de mensagens de um contato específico
+    app.post('/:id/sync-messages', {
+        preHandler: requireAuth,
+        schema: {
+            tags: ['Contacts'],
+            summary: 'Importa histórico de mensagens de um contato via Evolution API',
+            params: { type: 'object', properties: { id: { type: 'string' } } },
+        },
+    }, async (request, reply) => {
+        const { id } = request.params as { id: string }
+        const userId = request.session.user.id
+
+        const contact = await prisma.contact.findUnique({
+            where: { id },
+            include: { channel: true },
+        })
+        if (!contact) return reply.status(404).send({ error: 'Contato não encontrado.' })
+
+        const isMember = await prisma.member.findFirst({
+            where: { organizationId: contact.organizationId, userId },
+        })
+        if (!isMember) return reply.status(403).send({ error: 'Sem permissão.' })
+
+        if (!contact.channelId || !contact.channel) {
+            return reply.status(400).send({ error: 'Contato não possui canal WhatsApp vinculado.' })
+        }
+        if (contact.channel.type !== 'whatsapp') {
+            return reply.status(400).send({ error: 'Sincronização de mensagens disponível apenas para canais WhatsApp.' })
+        }
+        if (contact.channel.status !== 'connected') {
+            return reply.status(409).send({ error: 'Canal não está conectado.' })
+        }
+        if (!contact.externalId) {
+            return reply.status(400).send({ error: 'Contato não possui ID externo (JID) para sincronizar.' })
+        }
+
+        const cfg = contact.channel.config as WaConfig
+
+        type WaMessage = {
+            key?: { remoteJid?: string; fromMe?: boolean; id?: string }
+            message?: {
+                conversation?: string
+                extendedTextMessage?: { text?: string }
+                imageMessage?: { caption?: string }
+                videoMessage?: { caption?: string }
+                documentMessage?: { title?: string; caption?: string }
+                audioMessage?: Record<string, unknown>
+                stickerMessage?: Record<string, unknown>
+            }
+            messageType?: string
+            messageTimestamp?: number
+        }
+
+        const msgsResult = await evolutionFetch(cfg, `/chat/findMessages/${cfg.instanceName}`, {
+            method: 'POST',
+            body: JSON.stringify({
+                where: { key: { remoteJid: contact.externalId } },
+                limit: 200,
+            }),
+        })
+
+        if (!msgsResult.ok) {
+            return reply.status(502).send({ error: 'Não foi possível buscar mensagens da Evolution API.', detail: msgsResult.data })
+        }
+
+        const raw = msgsResult.data as
+            | WaMessage[]
+            | { messages?: WaMessage[] | { records?: WaMessage[] } }
+            | { records?: WaMessage[] }
+
+        let msgs: WaMessage[] = []
+        if (Array.isArray(raw)) {
+            msgs = raw
+        } else {
+            const m = (raw as { messages?: unknown }).messages
+            if (Array.isArray(m)) {
+                msgs = m as WaMessage[]
+            } else if (m && Array.isArray((m as { records?: unknown }).records)) {
+                msgs = (m as { records: WaMessage[] }).records
+            } else if (Array.isArray((raw as { records?: unknown }).records)) {
+                msgs = (raw as { records: WaMessage[] }).records
+            }
+        }
+
+        let imported = 0
+
+        for (const msg of msgs) {
+            if (!msg.key?.id) continue
+            const fromMe = msg.key.fromMe ?? false
+
+            type MsgType = 'text' | 'image' | 'audio' | 'video' | 'document' | 'sticker'
+            let msgType: MsgType = 'text'
+            let content = ''
+
+            if (msg.message?.conversation)                   { content = msg.message.conversation;                    msgType = 'text' }
+            else if (msg.message?.extendedTextMessage?.text) { content = msg.message.extendedTextMessage.text;         msgType = 'text' }
+            else if (msg.message?.imageMessage != null)      { content = msg.message.imageMessage?.caption ?? '';      msgType = 'image' }
+            else if (msg.message?.videoMessage != null)      { content = msg.message.videoMessage?.caption ?? '';      msgType = 'video' }
+            else if (msg.message?.audioMessage != null)      { content = '';                                           msgType = 'audio' }
+            else if (msg.message?.documentMessage != null)   { content = msg.message.documentMessage?.caption ?? '';   msgType = 'document' }
+            else if (msg.message?.stickerMessage != null)    { content = '';                                           msgType = 'sticker' }
+
+            const isMedia = ['image', 'audio', 'video', 'document', 'sticker'].includes(msgType)
+            if (!content && !isMedia) continue
+
+            const createdAt = msg.messageTimestamp ? new Date(msg.messageTimestamp * 1000) : new Date()
+
+            const existing = await prisma.message.findFirst({
+                where: { organizationId: contact.organizationId, externalId: msg.key.id },
+            })
+            if (!existing) {
+                await prisma.message.create({
+                    data: {
+                        organizationId: contact.organizationId,
+                        contactId:      contact.id,
+                        channelId:      contact.channelId,
+                        direction:      fromMe ? 'outbound' : 'inbound',
+                        type:           msgType,
+                        content,
+                        status:         'sent',
+                        externalId:     msg.key.id,
+                        createdAt,
+                    },
+                })
+                imported++
+            }
+        }
+
+        return { imported, total: msgs.length }
+    })
+
     // POST /contacts/unify — unifica contatos duplicados pelo telefone
     // O contato com channelId é o master; os sem canal são absorvidos
     app.post('/unify', {
@@ -396,8 +527,11 @@ export default async function (app: FastifyInstance) {
         for (const [, group] of groups) {
             if (group.length < 2) continue
 
-            // Master = contato com channelId; se mais de um, pega o mais antigo com canal
-            const master = group.find((c) => c.channelId) ?? group[0]
+            // Master = contato com channelId (mais antigo com canal)
+            // Se nenhum do grupo tem canal, pula — só unifica quando há um com channelId
+            const master = group.find((c) => c.channelId)
+            if (!master) continue
+
             const duplicates = group.filter((c) => c.id !== master.id)
 
             // Mescla campos: preenche no master o que estiver vazio
