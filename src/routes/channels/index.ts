@@ -550,13 +550,35 @@ export default async function (app: FastifyInstance) {
         }
         const newStatus = statusMap[instanceState] ?? channel.status
 
-        // Atualiza status e telefone se houver mudanças
-        const needsUpdate = newStatus !== channel.status || (instanceNumber && !cfg.phone)
+        // Atualiza status, telefone e foto se houver mudanças
+        const currentProfilePic = (cfg as any).profilePictureUrl
+        const needsUpdate = newStatus !== channel.status || (instanceNumber && !cfg.phone) || !currentProfilePic
+
+        let finalConfig = cfg
         if (needsUpdate) {
-            const updatedConfig = {
+            const updatedConfig: any = {
                 ...cfg,
                 ...(instanceNumber ? { phone: instanceNumber } : {}),
             }
+
+            // Busca foto do perfil se ainda não tem
+            if (instanceNumber && !currentProfilePic) {
+                try {
+                    const profileResult = await evolutionFetch(cfg, `/chat/fetchProfilePictureUrl/${cfg.instanceName}`, {
+                        method: 'POST',
+                        body: JSON.stringify({
+                            number: instanceNumber.replace(/\D/g, ''),
+                        }),
+                    })
+                    if (profileResult.ok && profileResult.data?.profilePictureUrl) {
+                        updatedConfig.profilePictureUrl = profileResult.data.profilePictureUrl
+                        log.info(`✅ Foto do perfil sincronizada para canal ${channel.name}: ${profileResult.data.profilePictureUrl}`)
+                    }
+                } catch (err) {
+                    log.warn(`⚠️ Erro ao buscar foto do perfil na rota de status: ${err}`)
+                }
+            }
+
             await prisma.channel.update({
                 where: { id },
                 data: {
@@ -564,9 +586,17 @@ export default async function (app: FastifyInstance) {
                     config: updatedConfig as Prisma.InputJsonValue
                 }
             })
+
+            finalConfig = updatedConfig
+            log.info(`✅ Canal ${channel.name} atualizado - Status: ${newStatus}, Phone: ${instanceNumber ?? 'N/A'}`)
         }
 
-        return { channelStatus: newStatus, instanceState, phone: instanceNumber ?? cfg.phone }
+        return {
+            channelStatus: newStatus,
+            instanceState,
+            phone: instanceNumber ?? cfg.phone,
+            profilePictureUrl: (finalConfig as any).profilePictureUrl
+        }
     })
 
     // POST /channels/:id/whatsapp/send — envia mensagem de texto ou mídia via Evolution API
@@ -818,28 +848,41 @@ export default async function (app: FastifyInstance) {
         const instanceState = dataObj?.state ?? ''
         const newStatus = stateToStatus[instanceState]
 
+        if (event === 'CONNECTION_UPDATE') {
+            log.info(`📞 CONNECTION_UPDATE - Canal: ${channel.name}, Estado: ${instanceState}, Número: ${dataObj?.number ?? 'N/A'}`)
+        }
+
         if (newStatus) {
             const currentConfig = channel.config as Record<string, unknown>
+            const phoneNumber = dataObj?.number ?? (channel.config as WhatsAppConfig).phone
+
             const updatedConfig = {
                 ...currentConfig,
-                phone: dataObj?.number ?? (channel.config as WhatsAppConfig).phone,
+                phone: phoneNumber,
             }
 
             // Se conectou com sucesso, busca a foto do perfil
-            if (newStatus === 'connected' && dataObj?.number) {
+            if (newStatus === 'connected' && phoneNumber) {
+                log.info(`🔍 Buscando foto do perfil para ${channel.name} (${phoneNumber})...`)
                 try {
                     const cfg = channel.config as WhatsAppConfig
+                    const cleanNumber = phoneNumber.replace(/\D/g, '') // remove caracteres não numéricos
+
                     const profileResult = await evolutionFetch(cfg, `/chat/fetchProfilePictureUrl/${cfg.instanceName}`, {
                         method: 'POST',
-                        body: JSON.stringify({
-                            number: dataObj.number.replace(/\D/g, ''), // remove caracteres não numéricos
-                        }),
+                        body: JSON.stringify({ number: cleanNumber }),
                     })
+
+                    log.info(`📸 Resposta da foto do perfil: ${JSON.stringify(profileResult)}`)
+
                     if (profileResult.ok && profileResult.data?.profilePictureUrl) {
                         updatedConfig.profilePictureUrl = profileResult.data.profilePictureUrl
+                        log.info(`✅ Foto do perfil salva: ${profileResult.data.profilePictureUrl}`)
+                    } else {
+                        log.warn(`⚠️ Foto do perfil não encontrada para ${cleanNumber}`)
                     }
                 } catch (err) {
-                    log.warn(`Erro ao buscar foto do perfil do canal: ${err}`)
+                    log.error(`❌ Erro ao buscar foto do perfil do canal: ${err}`)
                 }
             }
 
@@ -847,6 +890,8 @@ export default async function (app: FastifyInstance) {
                 where: { id: channel.id },
                 data: { status: newStatus, config: updatedConfig as Prisma.InputJsonValue },
             })
+
+            log.info(`✅ Canal ${channel.name} atualizado - Status: ${newStatus}, Phone: ${phoneNumber ?? 'N/A'}`)
         }
 
         // ── MESSAGES_UPSERT: salva mensagem recebida ─────────────────────────
