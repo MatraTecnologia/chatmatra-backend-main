@@ -216,6 +216,8 @@ model Member {
   userId         String
   role           String   @default("member")
   customRoleId   String?  // papel personalizado (opcional)
+  // Permissões extras para membros com role 'member'
+  canAssign      Boolean  @default(false)  // Permite atribuir/reatribuir conversas
   // Configurações de notificações
   notifyNewMessage  Boolean  @default(true)  // Notificar em novas mensagens
   notifyAssigned    Boolean  @default(true)  // Notificar quando atribuído a uma conversa

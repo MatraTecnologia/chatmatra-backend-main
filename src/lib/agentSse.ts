@@ -45,6 +45,7 @@ export type AgentEvent =
           convStatus: string
           assignedToId: string | null
           assignedToName: string | null
+          assignedToImage?: string | null
       }
     | {
           type: 'user_viewing'

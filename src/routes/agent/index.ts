@@ -27,8 +27,9 @@ export default async function (app: FastifyInstance) {
         const members = await prisma.member.findMany({
             where: { organizationId: orgId },
             select: {
-                id:   true,
-                role: true,
+                id:        true,
+                role:      true,
+                canAssign: true,
                 user: { select: { id: true, name: true, email: true, image: true } },
             },
             orderBy: { createdAt: 'asc' },

@@ -637,6 +637,10 @@ export default async function (app: FastifyInstance) {
         const isMember = await prisma.member.findFirst({ where: { organizationId: orgId, userId } })
         if (!isMember) return reply.status(403).send({ error: 'Sem permissão.' })
 
+        // Apenas admin/owner ou membros com canAssign podem atribuir conversas
+        const canAssignPerms = isMember.role === 'admin' || isMember.role === 'owner' || isMember.canAssign
+        if (!canAssignPerms) return reply.status(403).send({ error: 'Sem permissão para atribuir conversas.' })
+
         const contact = await prisma.contact.update({
             where: { id },
             data: { assignedToId: assignedToId ?? null },
@@ -652,6 +656,7 @@ export default async function (app: FastifyInstance) {
             convStatus: contact.convStatus,
             assignedToId: contact.assignedToId,
             assignedToName: contact.assignedTo?.name ?? null,
+            assignedToImage: contact.assignedTo?.image ?? null,
         })
 
         return contact

@@ -1396,6 +1396,21 @@ export default async function (app: FastifyInstance) {
             return reply.status(403).send({ error: 'Apenas admin/owner pode sincronizar o histórico completo.' })
         }
 
+        // Impede jobs duplicados: verifica se já há sync ativo/aguardando para esta org
+        const [waitingJobs, activeJobs] = await Promise.all([
+            syncQueue.getJobs(['waiting']),
+            syncQueue.getJobs(['active']),
+        ])
+        const existing = [...waitingJobs, ...activeJobs].find(
+            (j) => j.name === 'sync-all-history' && (j.data as { orgId: string }).orgId === orgId
+        )
+        if (existing) {
+            return reply.status(409).send({
+                error: 'Já existe uma sincronização em andamento para esta organização.',
+                jobId: existing.id,
+            })
+        }
+
         const job = await syncQueue.add('sync-all-history', { orgId, userId })
         return { jobId: job.id, queued: true }
     })
