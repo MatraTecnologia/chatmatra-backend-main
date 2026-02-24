@@ -73,6 +73,36 @@ export default async function (app: FastifyInstance) {
         }
     })
 
+    // GET /queue/jobs/:jobId — estado de um job específico (para polling do frontend)
+    app.get('/jobs/:jobId', { preHandler: requireAuth }, async (request, reply) => {
+        const { jobId } = request.params as { jobId: string }
+        const userId = request.session.user.id
+        const orgId  = request.organizationId
+        if (!orgId) return reply.status(400).send({ error: 'Organização não detectada.' })
+
+        const member = await prisma.member.findFirst({ where: { organizationId: orgId, userId } })
+        if (!member || !['admin', 'owner'].includes(member.role)) {
+            return reply.status(403).send({ error: 'Sem permissão.' })
+        }
+
+        // Tenta syncQueue primeiro (mais comum), depois messageQueue
+        let job = await syncQueue.getJob(jobId)
+        if (!job) job = await messageQueue.getJob(jobId) as unknown as typeof job
+
+        if (!job) {
+            // Job removido após conclusão — considera concluído
+            return { id: jobId, state: 'completed', progress: 100, failedReason: null }
+        }
+
+        const state = await job.getState()
+        return {
+            id:          job.id,
+            state,
+            progress:    job.progress,
+            failedReason: job.failedReason ?? null,
+        }
+    })
+
     // POST /queue/jobs/:jobId/retry — reprocessa um job com falha
     app.post('/jobs/:jobId/retry', { preHandler: requireAuth }, async (request, reply) => {
         const { jobId } = request.params as { jobId: string }
