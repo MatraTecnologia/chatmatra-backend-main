@@ -3,9 +3,8 @@ import { type Prisma } from '@prisma/client'
 import crypto from 'crypto'
 import { requireAuth } from '../../lib/session.js'
 import { prisma } from '../../lib/prisma.js'
-import { publishToOrg } from '../../lib/agentSse.js'
 import { log } from '../../lib/logger.js'
-import { messageQueue, syncQueue } from '../../lib/queue.js'
+import { messageQueue, syncQueue, type WaBusinessMessageJobData } from '../../lib/queue.js'
 
 // Gera instanceName: slug do nome + 8 chars hex aleatórios
 // ex: "Suporte WhatsApp" → "suporte-whatsapp-a3f9c12b"
@@ -1621,7 +1620,7 @@ export default async function (app: FastifyInstance) {
                     continue
                 }
 
-                // Processa mensagens recebidas
+                // Enfileira mensagens recebidas para processamento assíncrono
                 for (const message of value.messages ?? []) {
                     const from = message.from ?? ''
                     const msgId = message.id ?? ''
@@ -1630,9 +1629,9 @@ export default async function (app: FastifyInstance) {
 
                     if (!from || !msgId) continue
 
-                    // Detecta tipo e conteúdo
+                    // Detecta tipo e conteúdo antes de enfileirar
                     let content = ''
-                    let msgType: 'text' | 'image' | 'video' | 'audio' | 'document' = 'text'
+                    let msgType: WaBusinessMessageJobData['msgType'] = 'text'
 
                     if (type === 'text' && message.text?.body) {
                         content = message.text.body
@@ -1651,91 +1650,19 @@ export default async function (app: FastifyInstance) {
                         msgType = 'document'
                     }
 
-                    // Busca ou cria contato
                     const contactName = value.contacts?.find((c) => c.wa_id === from)?.profile?.name ?? from
-                    let contact = await prisma.contact.findFirst({
-                        where: { organizationId: channel.organizationId, externalId: from },
-                    })
 
-                    let isNewContact = false
-                    if (!contact) {
-                        contact = await prisma.contact.create({
-                            data: {
-                                organizationId: channel.organizationId,
-                                channelId: channel.id,
-                                externalId: from,
-                                phone: `+${from}`,
-                                name: contactName,
-                                convStatus: 'pending',
-                            },
-                        })
-                        isNewContact = true
-                    }
-
-                    // Salva mensagem
-                    const createdAt = timestamp ? new Date(Number(timestamp) * 1000) : new Date()
-                    const savedMsg = await prisma.message.create({
-                        data: {
-                            organizationId: channel.organizationId,
-                            contactId: contact.id,
-                            channelId: channel.id,
-                            direction: 'inbound',
-                            type: msgType,
-                            content,
-                            status: 'sent',
-                            externalId: msgId,
-                            createdAt,
-                        },
-                    })
-
-                    // Publica em tempo real
-                    publishToOrg(channel.organizationId, {
-                        type: 'new_message',
-                        contactId: contact.id,
+                    await messageQueue.add('process-wa-business-message', {
+                        source: 'whatsapp-business',
                         channelId: channel.id,
-                        externalId: contact.externalId,
-                        contactName: contact.name,
-                        contactAvatarUrl: contact.avatarUrl,
-                        message: {
-                            id: savedMsg.id,
-                            direction: 'inbound',
-                            type: msgType,
-                            content,
-                            status: 'sent',
-                            createdAt: savedMsg.createdAt.toISOString(),
-                        },
-                        ...(isNewContact ? {
-                            contact: {
-                                id: contact.id,
-                                name: contact.name,
-                                phone: contact.phone,
-                                avatarUrl: contact.avatarUrl,
-                                externalId: contact.externalId,
-                                channelId: contact.channelId,
-                                convStatus: 'pending',
-                                createdAt: contact.createdAt.toISOString(),
-                            },
-                        } : {}),
+                        organizationId: channel.organizationId,
+                        from,
+                        msgId,
+                        timestamp,
+                        msgType,
+                        content,
+                        contactName,
                     })
-
-                    // Atualiza status do contato
-                    if (!isNewContact) {
-                        const needsStatusUpdate = !contact.convStatus || contact.convStatus === 'resolved'
-                        const newStatus = needsStatusUpdate ? 'pending' : contact.convStatus
-                        await prisma.contact.update({
-                            where: { id: contact.id },
-                            data: { convStatus: newStatus },
-                        })
-                        if (needsStatusUpdate) {
-                            publishToOrg(channel.organizationId, {
-                                type: 'conv_updated',
-                                contactId: contact.id,
-                                convStatus: 'pending',
-                                assignedToId: contact.assignedToId,
-                                assignedToName: null,
-                            })
-                        }
-                    }
                 }
 
                 // Processa status de mensagens enviadas

@@ -3,15 +3,105 @@
 // Executa a mesma lógica que antes rodava inline no webhook handler.
 
 import { Worker } from 'bullmq'
-import { redisConnection, type MessageJobData } from '../queue.js'
+import { redisConnection, type MessageJobData, type WaBusinessMessageJobData } from '../queue.js'
 import { prisma } from '../prisma.js'
 import { publishToOrg } from '../agentSse.js'
 
 export function startMessageWorker() {
-    const worker = new Worker<MessageJobData>(
+    const worker = new Worker<MessageJobData | WaBusinessMessageJobData>(
         'webhook-messages',
         async (job) => {
-            const { channelId, organizationId, key, message, pushName } = job.data
+
+        // ── WhatsApp Business API (Meta) ────────────────────────────────────────
+        if (job.name === 'process-wa-business-message') {
+            const { channelId, organizationId, from, msgId, timestamp, msgType, content, contactName } = job.data as WaBusinessMessageJobData
+
+            // Evita duplicata
+            if (msgId) {
+                const existing = await prisma.message.findFirst({ where: { organizationId, externalId: msgId } })
+                if (existing) return
+            }
+
+            // Busca ou cria contato
+            let contact = await prisma.contact.findFirst({ where: { organizationId, externalId: from } })
+            let isNewContact = false
+            if (!contact) {
+                contact = await prisma.contact.create({
+                    data: {
+                        organizationId,
+                        channelId,
+                        externalId: from,
+                        phone: `+${from}`,
+                        name: contactName,
+                        convStatus: 'pending',
+                    },
+                })
+                isNewContact = true
+            }
+
+            const createdAt = timestamp ? new Date(Number(timestamp) * 1000) : new Date()
+            const savedMsg = await prisma.message.create({
+                data: {
+                    organizationId,
+                    contactId:  contact.id,
+                    channelId,
+                    direction:  'inbound',
+                    type:       msgType,
+                    content,
+                    status:     'sent',
+                    externalId: msgId,
+                    createdAt,
+                },
+            })
+
+            publishToOrg(organizationId, {
+                type: 'new_message',
+                contactId:        contact.id,
+                channelId,
+                externalId:       contact.externalId,
+                contactName:      contact.name,
+                contactAvatarUrl: contact.avatarUrl,
+                message: {
+                    id:        savedMsg.id,
+                    direction: 'inbound',
+                    type:      msgType,
+                    content,
+                    status:    'sent',
+                    createdAt: savedMsg.createdAt.toISOString(),
+                },
+                ...(isNewContact ? {
+                    contact: {
+                        id:         contact.id,
+                        name:       contact.name,
+                        phone:      contact.phone,
+                        avatarUrl:  contact.avatarUrl,
+                        externalId: contact.externalId,
+                        channelId:  contact.channelId,
+                        convStatus: 'pending',
+                        createdAt:  contact.createdAt.toISOString(),
+                    },
+                } : {}),
+            })
+
+            if (!isNewContact) {
+                const needsStatusUpdate = !contact.convStatus || contact.convStatus === 'resolved'
+                const newStatus = needsStatusUpdate ? 'pending' : contact.convStatus
+                await prisma.contact.update({ where: { id: contact.id }, data: { convStatus: newStatus } })
+                if (needsStatusUpdate) {
+                    publishToOrg(organizationId, {
+                        type: 'conv_updated',
+                        contactId:      contact.id,
+                        convStatus:     'pending',
+                        assignedToId:   contact.assignedToId,
+                        assignedToName: null,
+                    })
+                }
+            }
+            return
+        }
+
+        // ── Evolution API ───────────────────────────────────────────────────────
+            const { channelId, organizationId, key, message, pushName } = job.data as MessageJobData
             const remoteJid = key.remoteJid ?? ''
             const fromMe    = key.fromMe ?? false
 

@@ -30,6 +30,19 @@ export type MessageJobData = {
     pushName?: string
 }
 
+/** Job de processamento de mensagem recebida via WhatsApp Business API (Meta) */
+export type WaBusinessMessageJobData = {
+    source: 'whatsapp-business'
+    channelId: string
+    organizationId: string
+    from: string           // wa_id / phone number do remetente
+    msgId: string          // message ID único do Meta
+    timestamp: string      // unix timestamp como string
+    msgType: 'text' | 'image' | 'video' | 'audio' | 'document'
+    content: string
+    contactName: string
+}
+
 /** Job de sincronização de histórico de todos os canais da org */
 export type SyncAllHistoryJobData = {
     orgId: string
@@ -52,8 +65,8 @@ const queueOptions = {
     },
 }
 
-/** Fila para processamento de mensagens do webhook */
-export const messageQueue = new Queue<MessageJobData>('webhook-messages', queueOptions)
+/** Fila para processamento de mensagens do webhook (Evolution API + WA Business) */
+export const messageQueue = new Queue<MessageJobData | WaBusinessMessageJobData>('webhook-messages', queueOptions)
 
 /** Fila para sincronizações de histórico */
 export const syncQueue = new Queue<SyncAllHistoryJobData | SyncContactJobData>('sync-history', queueOptions)
