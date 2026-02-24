@@ -1515,6 +1515,164 @@ export default async function (app: FastifyInstance) {
         }).length }
     })
 
+    // POST /channels/whatsapp/sync-all-history
+    // Sincroniza o histórico completo de TODOS os canais WhatsApp conectados da organização.
+    // Para cada chat: se o contato já existe → insere mensagens novas; se não existe → cria contato + mensagens.
+    app.post('/whatsapp/sync-all-history', {
+        preHandler: requireAuth,
+    }, async (request, reply) => {
+        const userId = request.session.user.id
+        const orgId = request.organizationId
+        if (!orgId) return reply.status(400).send({ error: 'Organização não detectada.' })
+
+        const member = await prisma.member.findFirst({ where: { organizationId: orgId, userId } })
+        if (!member || !['admin', 'owner'].includes(member.role)) {
+            return reply.status(403).send({ error: 'Apenas admin/owner pode sincronizar o histórico completo.' })
+        }
+
+        // Busca todos os canais WhatsApp conectados da organização
+        const channels = await prisma.channel.findMany({
+            where: { organizationId: orgId, type: 'whatsapp', status: 'connected' },
+        })
+
+        type WaChat = { remoteJid?: string; id?: { remote?: string } }
+        type WaMessage = {
+            key?: { remoteJid?: string; fromMe?: boolean; id?: string }
+            message?: {
+                conversation?: string
+                extendedTextMessage?: { text?: string }
+                imageMessage?: { caption?: string }
+                videoMessage?: { caption?: string }
+                documentMessage?: { title?: string; caption?: string }
+                audioMessage?: Record<string, unknown>
+                stickerMessage?: Record<string, unknown>
+            }
+            messageType?: string
+            pushName?: string
+            messageTimestamp?: number
+        }
+
+        let totalMessages = 0
+        let totalContacts = 0
+        let totalChats = 0
+
+        for (const channel of channels) {
+            const cfg = channel.config as WhatsAppConfig
+
+            // 1. Busca todos os chats da instância
+            const chatsResult = await evolutionFetch(cfg, `/chat/findChats/${cfg.instanceName}`, {
+                method: 'POST',
+                body: JSON.stringify({}),
+            })
+            if (!chatsResult.ok) continue
+
+            const chats: WaChat[] = Array.isArray(chatsResult.data) ? chatsResult.data : []
+
+            for (const chat of chats) {
+                const jid = chat.remoteJid ?? chat.id?.remote ?? ''
+                if (!jid || (!jid.includes('@s.whatsapp.net') && !jid.includes('@c.us'))) continue
+
+                // 2. Busca mensagens deste chat (sem limit — histórico completo)
+                const msgsResult = await evolutionFetch(cfg, `/chat/findMessages/${cfg.instanceName}`, {
+                    method: 'POST',
+                    body: JSON.stringify({ where: { key: { remoteJid: jid } } }),
+                })
+                if (!msgsResult.ok) continue
+
+                const raw = msgsResult.data as
+                    | WaMessage[]
+                    | { messages?: WaMessage[] | { records?: WaMessage[] } }
+                    | { records?: WaMessage[] }
+
+                let msgs: WaMessage[] = []
+                if (Array.isArray(raw)) {
+                    msgs = raw
+                } else {
+                    const m = (raw as { messages?: unknown }).messages
+                    if (Array.isArray(m)) {
+                        msgs = m as WaMessage[]
+                    } else if (m && Array.isArray((m as { records?: unknown }).records)) {
+                        msgs = (m as { records: WaMessage[] }).records
+                    } else if (Array.isArray((raw as { records?: unknown }).records)) {
+                        msgs = (raw as { records: WaMessage[] }).records
+                    }
+                }
+
+                if (msgs.length === 0) continue
+                totalChats++
+
+                // 3. Cria ou busca o contato
+                let contact = await prisma.contact.findFirst({
+                    where: { organizationId: orgId, externalId: jid },
+                })
+                if (!contact) {
+                    const rawNumber = jid.split('@')[0]
+                    const firstName = msgs.find((m) => !m.key?.fromMe && m.pushName)?.pushName
+                    contact = await prisma.contact.create({
+                        data: {
+                            organizationId: orgId,
+                            channelId: channel.id,
+                            externalId: jid,
+                            phone: rawNumber ? `+${rawNumber}` : undefined,
+                            name: firstName || rawNumber || 'Desconhecido',
+                        },
+                    })
+                    totalContacts++
+                }
+
+                // 4. Insere mensagens novas (upsert por externalId)
+                for (const msg of msgs) {
+                    if (!msg.key?.id) continue
+                    const fromMe = msg.key.fromMe ?? false
+
+                    type MsgType = 'text' | 'image' | 'audio' | 'video' | 'document' | 'sticker'
+                    let msgType: MsgType = 'text'
+                    let content = ''
+
+                    if (msg.message?.conversation)                   { content = msg.message.conversation;                    msgType = 'text' }
+                    else if (msg.message?.extendedTextMessage?.text) { content = msg.message.extendedTextMessage.text;         msgType = 'text' }
+                    else if (msg.message?.imageMessage != null)      { content = msg.message.imageMessage?.caption ?? '';      msgType = 'image' }
+                    else if (msg.message?.videoMessage != null)      { content = msg.message.videoMessage?.caption ?? '';      msgType = 'video' }
+                    else if (msg.message?.audioMessage != null)      { content = '';                                           msgType = 'audio' }
+                    else if (msg.message?.documentMessage != null)   { content = msg.message.documentMessage?.caption ?? '';   msgType = 'document' }
+                    else if (msg.message?.stickerMessage != null)    { content = '';                                           msgType = 'sticker' }
+
+                    const isMedia = ['image', 'audio', 'video', 'document', 'sticker'].includes(msgType)
+                    if (!content && !isMedia) continue
+
+                    const createdAt = msg.messageTimestamp ? new Date(msg.messageTimestamp * 1000) : new Date()
+
+                    const existing = await prisma.message.findFirst({
+                        where: { organizationId: orgId, externalId: msg.key.id },
+                    })
+                    if (!existing) {
+                        await prisma.message.create({
+                            data: {
+                                organizationId: orgId,
+                                contactId:      contact.id,
+                                channelId:      channel.id,
+                                direction:      fromMe ? 'outbound' : 'inbound',
+                                type:           msgType,
+                                content,
+                                status:         'sent',
+                                externalId:     msg.key.id,
+                                createdAt,
+                            },
+                        })
+                        totalMessages++
+                    }
+                }
+            }
+        }
+
+        return {
+            channelsSynced: channels.length,
+            chatsProcessed: totalChats,
+            contactsCreated: totalContacts,
+            messagesImported: totalMessages,
+        }
+    })
+
     // ═══════════════════════════════════════════════════════════════════════════════
     // WHATSAPP BUSINESS API (META) ROUTES
     // ═══════════════════════════════════════════════════════════════════════════════
