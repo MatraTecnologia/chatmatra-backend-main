@@ -105,6 +105,7 @@ model Organization {
   emailTemplatePresets EmailTemplatePreset[]
   assignmentRules AssignmentRule[]
   messageTemplates MessageTemplate[]
+  products         Product[]
   // Facebook App credentials (por organização)
   fbAppId     String?
   fbAppSecret String?
@@ -443,4 +444,26 @@ model MessageTemplate {
 
   @@unique([organizationId, shortcut])
   @@map("message_templates")
+}
+
+// ─── Products / Catalog ───────────────────────────────────────────────────────
+
+model Product {
+  id              String   @id @default(cuid())
+  organizationId  String
+  name            String
+  description     String?
+  measurements    String?  // ex: "10x20x5cm / 1.5kg"
+  price           String?  // ex: "R$ 99,90"
+  imageUrls       String[] // URLs no S3
+  videoUrls       String[] // URLs no S3
+  pdfUrl          String?  // URL no S3
+  messageTemplate String?  // Modelo de mensagem com variáveis: {nome}, {preco}, {descricao}
+  active          Boolean  @default(true)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@map("products")
 }

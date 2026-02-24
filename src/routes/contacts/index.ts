@@ -350,6 +350,108 @@ export default async function (app: FastifyInstance) {
         }
     })
 
+    // POST /contacts/unify — unifica contatos duplicados pelo telefone
+    // O contato com channelId é o master; os sem canal são absorvidos
+    app.post('/unify', {
+        preHandler: requireAuth,
+        schema: {
+            tags: ['Contacts'],
+            summary: 'Unifica contatos duplicados pelo número de telefone',
+        },
+    }, async (request, reply) => {
+        const userId = request.session.user.id
+
+        const orgId = request.organizationId
+        if (!orgId) {
+            return reply.status(400).send({ error: 'Nenhuma organização detectada.' })
+        }
+
+        const isMember = await prisma.member.findFirst({ where: { organizationId: orgId, userId } })
+        if (!isMember) return reply.status(403).send({ error: 'Sem permissão.' })
+
+        // Busca todos os contatos com telefone preenchido
+        const allContacts = await prisma.contact.findMany({
+            where: { organizationId: orgId, phone: { not: null } },
+            orderBy: { createdAt: 'asc' },
+        })
+
+        // Normaliza telefone: remove espaços, traços, parênteses
+        function normalizePhone(phone: string) {
+            return phone.replace(/[\s\-().+]/g, '').replace(/^0+/, '')
+        }
+
+        // Agrupa por telefone normalizado
+        const groups = new Map<string, typeof allContacts>()
+        for (const contact of allContacts) {
+            const key = normalizePhone(contact.phone!)
+            if (!key) continue
+            const group = groups.get(key) ?? []
+            group.push(contact)
+            groups.set(key, group)
+        }
+
+        let mergedGroups = 0
+        let removedContacts = 0
+
+        for (const [, group] of groups) {
+            if (group.length < 2) continue
+
+            // Master = contato com channelId; se mais de um, pega o mais antigo com canal
+            const master = group.find((c) => c.channelId) ?? group[0]
+            const duplicates = group.filter((c) => c.id !== master.id)
+
+            // Mescla campos: preenche no master o que estiver vazio
+            const updateData: Record<string, unknown> = {}
+            for (const dup of duplicates) {
+                if (!master.email && dup.email)       updateData.email     = dup.email
+                if (!master.avatarUrl && dup.avatarUrl) updateData.avatarUrl = dup.avatarUrl
+                if (!master.notes && dup.notes)       updateData.notes     = dup.notes
+                else if (master.notes && dup.notes && master.notes !== dup.notes) {
+                    updateData.notes = `${master.notes}\n---\n${dup.notes}`
+                }
+                if (!master.channelId && dup.channelId)     updateData.channelId  = dup.channelId
+                if (!master.externalId && dup.externalId)   updateData.externalId = dup.externalId
+                if (!master.assignedToId && dup.assignedToId) updateData.assignedToId = dup.assignedToId
+            }
+
+            if (Object.keys(updateData).length > 0) {
+                await prisma.contact.update({ where: { id: master.id }, data: updateData })
+            }
+
+            for (const dup of duplicates) {
+                // Migra mensagens
+                await prisma.message.updateMany({
+                    where: { contactId: dup.id },
+                    data:  { contactId: master.id },
+                })
+
+                // Migra tags (evita duplicatas via upsert)
+                const dupTags = await prisma.contactTag.findMany({ where: { contactId: dup.id } })
+                for (const tag of dupTags) {
+                    await prisma.contactTag.upsert({
+                        where:  { contactId_tagId: { contactId: master.id, tagId: tag.tagId } },
+                        update: {},
+                        create: { contactId: master.id, tagId: tag.tagId },
+                    })
+                }
+
+                // Migra campaign leads
+                await prisma.campaignLead.updateMany({
+                    where: { contactId: dup.id },
+                    data:  { contactId: master.id },
+                })
+
+                // Remove o duplicado
+                await prisma.contact.delete({ where: { id: dup.id } })
+                removedContacts++
+            }
+
+            mergedGroups++
+        }
+
+        return { mergedGroups, removedContacts }
+    })
+
     // POST /contacts — cria contato manual
     app.post('/', {
         preHandler: requireAuth,
