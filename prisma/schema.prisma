@@ -104,6 +104,7 @@ model Organization {
   emailTemplates EmailTemplate[]
   emailTemplatePresets EmailTemplatePreset[]
   assignmentRules AssignmentRule[]
+  messageTemplates MessageTemplate[]
   // Facebook App credentials (por organização)
   fbAppId     String?
   fbAppSecret String?
@@ -425,4 +426,21 @@ model AssignmentRule {
   organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
 
   @@map("assignment_rules")
+}
+
+// ─── Message Templates ────────────────────────────────────────────────────────
+
+model MessageTemplate {
+  id             String   @id @default(cuid())
+  organizationId String
+  shortcut       String   // Atalho do template (ex: "boas-vindas", "horario")
+  name           String   // Nome descritivo
+  content        String   // Conteúdo da mensagem (suporta variáveis: {{name}}, {{phone}})
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@unique([organizationId, shortcut])
+  @@map("message_templates")
 }
