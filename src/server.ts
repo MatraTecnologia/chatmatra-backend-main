@@ -7,6 +7,8 @@ import autoload from '@fastify/autoload'
 import { fileURLToPath } from 'url'
 import { join, dirname } from 'path'
 import { initializePresenceSystem } from './lib/presence.js'
+import { startMessageWorker } from './lib/workers/messageWorker.js'
+import { startSyncWorker } from './lib/workers/syncWorker.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 
@@ -53,6 +55,10 @@ await app.listen({ port: Number(process.env.PORT) || 3333, host: '0.0.0.0' })
 // Inicializa Socket.io para presença em tempo real
 const httpServer = app.server
 initializePresenceSystem(httpServer)
+
+// Inicializa workers BullMQ (processam filas de mensagens e sincronizações)
+startMessageWorker()
+startSyncWorker()
 
 console.log(`🚀 Servidor rodando em http://localhost:${Number(process.env.PORT) || 3333}`)
 console.log(`📡 WebSocket (Socket.io) pronto para conexões`)

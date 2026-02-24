@@ -5,6 +5,7 @@ import { requireAuth } from '../../lib/session.js'
 import { prisma } from '../../lib/prisma.js'
 import { publishToOrg } from '../../lib/agentSse.js'
 import { log } from '../../lib/logger.js'
+import { messageQueue, syncQueue } from '../../lib/queue.js'
 
 // Gera instanceName: slug do nome + 8 chars hex aleatórios
 // ex: "Suporte WhatsApp" → "suporte-whatsapp-a3f9c12b"
@@ -894,140 +895,16 @@ export default async function (app: FastifyInstance) {
             log.info(`✅ Canal ${channel.name} atualizado - Status: ${newStatus}, Phone: ${phoneNumber ?? 'N/A'}`)
         }
 
-        // ── MESSAGES_UPSERT: salva mensagem recebida ─────────────────────────
+        // ── MESSAGES_UPSERT: enfileira para processamento assíncrono ────────
         if (event === 'MESSAGES_UPSERT' && dataObj?.key) {
-            const { key, message, pushName } = dataObj
-            const remoteJid = key.remoteJid ?? ''
-            const fromMe    = key.fromMe ?? false
-
-            // Só processa mensagens individuais (não grupos)
-            if (remoteJid.includes('@s.whatsapp.net') || remoteJid.includes('@c.us')) {
-                // eslint-disable-next-line @typescript-eslint/no-explicit-any
-                const msg = message as any
-
-                // Detecta tipo de mídia
-                type MsgType = 'text' | 'image' | 'audio' | 'video' | 'document' | 'sticker'
-                let msgType: MsgType = 'text'
-                let content = ''
-
-                if (msg?.conversation)                     { content = msg.conversation;                      msgType = 'text' }
-                else if (msg?.extendedTextMessage?.text)   { content = msg.extendedTextMessage.text;           msgType = 'text' }
-                else if (msg?.imageMessage != null)        { content = msg.imageMessage?.caption ?? '';        msgType = 'image' }
-                else if (msg?.videoMessage != null)        { content = msg.videoMessage?.caption ?? '';        msgType = 'video' }
-                else if (msg?.audioMessage != null)        { content = '';                                     msgType = 'audio' }
-                else if (msg?.documentMessage != null)     { content = msg.documentMessage?.fileName ?? '';   msgType = 'document' }
-                else if (msg?.stickerMessage != null)      { content = '';                                     msgType = 'sticker' }
-                else if (msg?.locationMessage != null)     { content = '[Localização]';                        msgType = 'text' }
-                else if (msg?.contactMessage != null)      { content = '[Contato]';                            msgType = 'text' }
-                else if (msg?.reactionMessage != null)     { content = `[Reação: ${msg.reactionMessage?.text ?? ''}]`; msgType = 'text' }
-
-                const isMedia = ['image', 'audio', 'video', 'document', 'sticker'].includes(msgType)
-
-                if (content || isMedia) {
-                    const direction = fromMe ? 'outbound' : 'inbound'
-
-                    // Busca ou cria o contato pelo JID
-                    let contact = await prisma.contact.findFirst({
-                        where: { organizationId: channel.organizationId, externalId: remoteJid },
-                    })
-
-                    let isNewContact = false
-                    if (!contact) {
-                        const rawNumber = remoteJid.split('@')[0]
-                        // Para mensagens enviadas (outbound), não usar pushName pois pode vir incorreto
-                        // Apenas mensagens recebidas (inbound) devem usar pushName do remetente
-                        const contactName = fromMe
-                            ? (rawNumber || 'Contato')
-                            : (pushName || rawNumber || 'Desconhecido')
-
-                        contact = await prisma.contact.create({
-                            data: {
-                                organizationId: channel.organizationId,
-                                channelId: channel.id,
-                                externalId: remoteJid,
-                                phone: rawNumber ? `+${rawNumber}` : undefined,
-                                name: contactName,
-                                convStatus: 'pending',
-                            },
-                        })
-                        isNewContact = true
-                    } else {
-                        // Atualiza o nome do contato se receber mensagem inbound com pushName diferente
-                        if (!fromMe && pushName && pushName !== contact.name) {
-                            await prisma.contact.update({
-                                where: { id: contact.id },
-                                data: { name: pushName },
-                            })
-                            contact.name = pushName
-                        }
-                    }
-
-                    const savedMsg = await prisma.message.create({
-                        data: {
-                            organizationId: channel.organizationId,
-                            contactId:      contact.id,
-                            channelId:      channel.id,
-                            direction,
-                            type:      msgType,
-                            content,
-                            status:    'sent',
-                            externalId: key.id,
-                        },
-                    })
-
-                    // Publica mensagem em tempo real para os agentes
-                    // Se contato é novo, inclui dados para o frontend adicionar na lista
-                    publishToOrg(channel.organizationId, {
-                        type: 'new_message',
-                        contactId:        contact.id,
-                        channelId:        channel.id,
-                        externalId:       contact.externalId,
-                        contactName:      contact.name,
-                        contactAvatarUrl: contact.avatarUrl,
-                        message: {
-                            id:        savedMsg.id,
-                            direction: direction as 'outbound' | 'inbound',
-                            type:      msgType,
-                            content,
-                            status:    'sent',
-                            createdAt: savedMsg.createdAt.toISOString(),
-                        },
-                        // Inclui dados do contato se foi criado agora (aparece na lista do frontend)
-                        ...(isNewContact ? {
-                            contact: {
-                                id:         contact.id,
-                                name:       contact.name,
-                                phone:      contact.phone,
-                                avatarUrl:  contact.avatarUrl,
-                                externalId: contact.externalId,
-                                channelId:  contact.channelId,
-                                convStatus: 'pending',
-                                createdAt:  contact.createdAt.toISOString(),
-                            },
-                        } : {}),
-                    })
-
-                    // Mensagem inbound → atualiza contato (força updatedAt para ordenação por atividade)
-                    if (!fromMe && !isNewContact) {
-                        const needsStatusUpdate = !contact.convStatus || contact.convStatus === 'resolved'
-                        const newStatus = needsStatusUpdate ? 'pending' : contact.convStatus
-                        // Sempre faz update para que @updatedAt seja renovado (ordenação por última atividade)
-                        await prisma.contact.update({
-                            where: { id: contact.id },
-                            data: { convStatus: newStatus },
-                        })
-                        if (needsStatusUpdate) {
-                            publishToOrg(channel.organizationId, {
-                                type: 'conv_updated',
-                                contactId: contact.id,
-                                convStatus: 'pending',
-                                assignedToId: contact.assignedToId,
-                                assignedToName: null,
-                            })
-                        }
-                    }
-                }
-            }
+            await messageQueue.add('process-message', {
+                channelId:      channel.id,
+                organizationId: channel.organizationId,
+                channelName:    channel.name,
+                key:            dataObj.key,
+                message:        dataObj.message,
+                pushName:       dataObj.pushName,
+            })
         }
 
         // ── CONTACTS_UPSERT / CONTACTS_UPDATE: sincroniza nome e foto do contato ────
@@ -1516,13 +1393,12 @@ export default async function (app: FastifyInstance) {
     })
 
     // POST /channels/whatsapp/sync-all-history
-    // Sincroniza o histórico completo de TODOS os canais WhatsApp conectados da organização.
-    // Para cada chat: se o contato já existe → insere mensagens novas; se não existe → cria contato + mensagens.
+    // Enfileira um job de sincronização completa de histórico (processado pelo SyncWorker).
     app.post('/whatsapp/sync-all-history', {
         preHandler: requireAuth,
     }, async (request, reply) => {
         const userId = request.session.user.id
-        const orgId = request.organizationId
+        const orgId  = request.organizationId
         if (!orgId) return reply.status(400).send({ error: 'Organização não detectada.' })
 
         const member = await prisma.member.findFirst({ where: { organizationId: orgId, userId } })
@@ -1530,147 +1406,8 @@ export default async function (app: FastifyInstance) {
             return reply.status(403).send({ error: 'Apenas admin/owner pode sincronizar o histórico completo.' })
         }
 
-        // Busca todos os canais WhatsApp conectados da organização
-        const channels = await prisma.channel.findMany({
-            where: { organizationId: orgId, type: 'whatsapp', status: 'connected' },
-        })
-
-        type WaChat = { remoteJid?: string; id?: { remote?: string } }
-        type WaMessage = {
-            key?: { remoteJid?: string; fromMe?: boolean; id?: string }
-            message?: {
-                conversation?: string
-                extendedTextMessage?: { text?: string }
-                imageMessage?: { caption?: string }
-                videoMessage?: { caption?: string }
-                documentMessage?: { title?: string; caption?: string }
-                audioMessage?: Record<string, unknown>
-                stickerMessage?: Record<string, unknown>
-            }
-            messageType?: string
-            pushName?: string
-            messageTimestamp?: number
-        }
-
-        let totalMessages = 0
-        let totalContacts = 0
-        let totalChats = 0
-
-        for (const channel of channels) {
-            const cfg = channel.config as WhatsAppConfig
-
-            // 1. Busca todos os chats da instância
-            const chatsResult = await evolutionFetch(cfg, `/chat/findChats/${cfg.instanceName}`, {
-                method: 'POST',
-                body: JSON.stringify({}),
-            })
-            if (!chatsResult.ok) continue
-
-            const chats: WaChat[] = Array.isArray(chatsResult.data) ? chatsResult.data : []
-
-            for (const chat of chats) {
-                const jid = chat.remoteJid ?? chat.id?.remote ?? ''
-                if (!jid || (!jid.includes('@s.whatsapp.net') && !jid.includes('@c.us'))) continue
-
-                // 2. Busca mensagens deste chat (sem limit — histórico completo)
-                const msgsResult = await evolutionFetch(cfg, `/chat/findMessages/${cfg.instanceName}`, {
-                    method: 'POST',
-                    body: JSON.stringify({ where: { key: { remoteJid: jid } } }),
-                })
-                if (!msgsResult.ok) continue
-
-                const raw = msgsResult.data as
-                    | WaMessage[]
-                    | { messages?: WaMessage[] | { records?: WaMessage[] } }
-                    | { records?: WaMessage[] }
-
-                let msgs: WaMessage[] = []
-                if (Array.isArray(raw)) {
-                    msgs = raw
-                } else {
-                    const m = (raw as { messages?: unknown }).messages
-                    if (Array.isArray(m)) {
-                        msgs = m as WaMessage[]
-                    } else if (m && Array.isArray((m as { records?: unknown }).records)) {
-                        msgs = (m as { records: WaMessage[] }).records
-                    } else if (Array.isArray((raw as { records?: unknown }).records)) {
-                        msgs = (raw as { records: WaMessage[] }).records
-                    }
-                }
-
-                if (msgs.length === 0) continue
-                totalChats++
-
-                // 3. Cria ou busca o contato
-                let contact = await prisma.contact.findFirst({
-                    where: { organizationId: orgId, externalId: jid },
-                })
-                if (!contact) {
-                    const rawNumber = jid.split('@')[0]
-                    const firstName = msgs.find((m) => !m.key?.fromMe && m.pushName)?.pushName
-                    contact = await prisma.contact.create({
-                        data: {
-                            organizationId: orgId,
-                            channelId: channel.id,
-                            externalId: jid,
-                            phone: rawNumber ? `+${rawNumber}` : undefined,
-                            name: firstName || rawNumber || 'Desconhecido',
-                        },
-                    })
-                    totalContacts++
-                }
-
-                // 4. Insere mensagens novas (upsert por externalId)
-                for (const msg of msgs) {
-                    if (!msg.key?.id) continue
-                    const fromMe = msg.key.fromMe ?? false
-
-                    type MsgType = 'text' | 'image' | 'audio' | 'video' | 'document' | 'sticker'
-                    let msgType: MsgType = 'text'
-                    let content = ''
-
-                    if (msg.message?.conversation)                   { content = msg.message.conversation;                    msgType = 'text' }
-                    else if (msg.message?.extendedTextMessage?.text) { content = msg.message.extendedTextMessage.text;         msgType = 'text' }
-                    else if (msg.message?.imageMessage != null)      { content = msg.message.imageMessage?.caption ?? '';      msgType = 'image' }
-                    else if (msg.message?.videoMessage != null)      { content = msg.message.videoMessage?.caption ?? '';      msgType = 'video' }
-                    else if (msg.message?.audioMessage != null)      { content = '';                                           msgType = 'audio' }
-                    else if (msg.message?.documentMessage != null)   { content = msg.message.documentMessage?.caption ?? '';   msgType = 'document' }
-                    else if (msg.message?.stickerMessage != null)    { content = '';                                           msgType = 'sticker' }
-
-                    const isMedia = ['image', 'audio', 'video', 'document', 'sticker'].includes(msgType)
-                    if (!content && !isMedia) continue
-
-                    const createdAt = msg.messageTimestamp ? new Date(msg.messageTimestamp * 1000) : new Date()
-
-                    const existing = await prisma.message.findFirst({
-                        where: { organizationId: orgId, externalId: msg.key.id },
-                    })
-                    if (!existing) {
-                        await prisma.message.create({
-                            data: {
-                                organizationId: orgId,
-                                contactId:      contact.id,
-                                channelId:      channel.id,
-                                direction:      fromMe ? 'outbound' : 'inbound',
-                                type:           msgType,
-                                content,
-                                status:         'sent',
-                                externalId:     msg.key.id,
-                                createdAt,
-                            },
-                        })
-                        totalMessages++
-                    }
-                }
-            }
-        }
-
-        return {
-            channelsSynced: channels.length,
-            chatsProcessed: totalChats,
-            contactsCreated: totalContacts,
-            messagesImported: totalMessages,
-        }
+        const job = await syncQueue.add('sync-all-history', { orgId, userId })
+        return { jobId: job.id, queued: true }
     })
 
     // ═══════════════════════════════════════════════════════════════════════════════
