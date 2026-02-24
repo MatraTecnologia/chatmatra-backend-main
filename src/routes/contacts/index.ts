@@ -554,12 +554,13 @@ export default async function (app: FastifyInstance) {
             body: {
                 type: 'object',
                 properties: {
-                    name:      { type: 'string', minLength: 1 },
-                    phone:     { type: 'string' },
-                    email:     { type: 'string' },
-                    avatarUrl: { type: 'string' },
-                    notes:     { type: 'string' },
-                    channelId: { type: 'string' },
+                    name:         { type: 'string', minLength: 1 },
+                    phone:        { type: 'string' },
+                    email:        { type: 'string' },
+                    avatarUrl:    { type: 'string' },
+                    notes:        { type: 'string' },
+                    channelId:    { type: 'string' },
+                    assignedToId: { type: 'string', nullable: true },
                 },
             },
         },
@@ -572,6 +573,7 @@ export default async function (app: FastifyInstance) {
             avatarUrl?: string
             notes?: string
             channelId?: string
+            assignedToId?: string | null
         }
         const userId = request.session.user.id
 
@@ -584,14 +586,25 @@ export default async function (app: FastifyInstance) {
         const updated = await prisma.contact.update({
             where: { id },
             data: {
-                ...(body.name      !== undefined && { name:      body.name }),
-                ...(body.phone     !== undefined && { phone:     body.phone }),
-                ...(body.email     !== undefined && { email:     body.email }),
-                ...(body.avatarUrl !== undefined && { avatarUrl: body.avatarUrl }),
-                ...(body.notes     !== undefined && { notes:     body.notes }),
-                ...(body.channelId !== undefined && { channelId: body.channelId }),
+                ...(body.name         !== undefined && { name:         body.name }),
+                ...(body.phone        !== undefined && { phone:        body.phone }),
+                ...(body.email        !== undefined && { email:        body.email }),
+                ...(body.avatarUrl    !== undefined && { avatarUrl:    body.avatarUrl }),
+                ...(body.notes        !== undefined && { notes:        body.notes }),
+                ...(body.channelId    !== undefined && { channelId:    body.channelId }),
+                ...(body.assignedToId !== undefined && { assignedToId: body.assignedToId ?? null }),
             },
         })
+
+        if (body.assignedToId !== undefined) {
+            publishToOrg(contact.organizationId, {
+                type: 'conv_updated',
+                contactId: id,
+                convStatus: updated.convStatus,
+                assignedToId: updated.assignedToId,
+                assignedToName: null,
+            })
+        }
 
         return updated
     })
