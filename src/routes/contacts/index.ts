@@ -122,7 +122,7 @@ export default async function (app: FastifyInstance) {
         return { total, page, limit, contacts }
     })
 
-    // GET /contacts?search=&page=&limit=
+    // GET /contacts?search=&page=&limit=&teamId=&mine=
     app.get('/', {
         preHandler: requireAuth,
         schema: {
@@ -133,6 +133,8 @@ export default async function (app: FastifyInstance) {
                 properties: {
                     search:      { type: 'string' },
                     tagId:       { type: 'string' },
+                    teamId:      { type: 'string' },
+                    mine:        { type: 'boolean' },
                     hasMessages: { type: 'boolean' },
                     page:        { type: 'integer', minimum: 1, default: 1 },
                     limit:       { type: 'integer', minimum: 1, maximum: 500, default: 30 },
@@ -140,9 +142,11 @@ export default async function (app: FastifyInstance) {
             },
         },
     }, async (request, reply) => {
-        const { search, tagId, hasMessages, page = 1, limit = 30 } = request.query as {
+        const { search, tagId, teamId, mine, hasMessages, page = 1, limit = 30 } = request.query as {
             search?: string
             tagId?: string
+            teamId?: string
+            mine?: boolean
             hasMessages?: boolean
             page?: number
             limit?: number
@@ -174,6 +178,10 @@ export default async function (app: FastifyInstance) {
             ...(!isAdminOrOwner ? {
                 channelId: { not: null },
             } : {}),
+            // Filtro "mine": apenas atribuídos ao usuário logado
+            ...(mine ? { assignedToId: userId } : {}),
+            // Filtro por time
+            ...(teamId ? { teamId } : {}),
             ...(hasMessages ? { messages: { some: {} } } : {}),
             ...(tagId ? { tags: { some: { tagId } } } : {}),
             ...(search
@@ -205,6 +213,7 @@ export default async function (app: FastifyInstance) {
                     notes: true,
                     convStatus: true,
                     assignedToId: true,
+                    teamId: true,
                     createdAt: true,
                     updatedAt: true,
                     channel: {
@@ -217,6 +226,9 @@ export default async function (app: FastifyInstance) {
                     },
                     assignedTo: {
                         select: { id: true, name: true, image: true },
+                    },
+                    team: {
+                        select: { id: true, name: true, color: true },
                     },
                 },
             }),
@@ -657,6 +669,58 @@ export default async function (app: FastifyInstance) {
             assignedToId: contact.assignedToId,
             assignedToName: contact.assignedTo?.name ?? null,
             assignedToImage: contact.assignedTo?.image ?? null,
+        })
+
+        return contact
+    })
+
+    // PATCH /contacts/:id/assign-team — atribui ou desatribui time à conversa
+    app.patch('/:id/assign-team', {
+        preHandler: requireAuth,
+        schema: {
+            tags: ['Contacts'],
+            summary: 'Atribui time a uma conversa',
+            params: { type: 'object', properties: { id: { type: 'string' } } },
+            body: {
+                type: 'object',
+                properties: {
+                    teamId: { type: 'string', nullable: true },
+                },
+            },
+        },
+    }, async (request, reply) => {
+        const { id } = request.params as { id: string }
+        const { teamId } = request.body as { teamId: string | null }
+        const userId = request.session.user.id
+
+        const orgId = request.organizationId
+        if (!orgId) return reply.status(400).send({ error: 'Nenhuma organização detectada.' })
+
+        const isMember = await prisma.member.findFirst({ where: { organizationId: orgId, userId } })
+        if (!isMember) return reply.status(403).send({ error: 'Sem permissão.' })
+
+        const canAssignPerms = isMember.role === 'admin' || isMember.role === 'owner' || isMember.canAssign
+        if (!canAssignPerms) return reply.status(403).send({ error: 'Sem permissão para atribuir conversas.' })
+
+        const contact = await prisma.contact.update({
+            where: { id },
+            data: { teamId: teamId ?? null },
+            select: {
+                id: true, convStatus: true, assignedToId: true, teamId: true,
+                assignedTo: { select: { id: true, name: true, image: true } },
+                team: { select: { id: true, name: true, color: true } },
+            },
+        })
+
+        publishToOrg(orgId, {
+            type: 'conv_updated',
+            contactId: id,
+            convStatus: contact.convStatus,
+            assignedToId: contact.assignedToId,
+            assignedToName: contact.assignedTo?.name ?? null,
+            assignedToImage: contact.assignedTo?.image ?? null,
+            teamId: contact.teamId,
+            teamName: contact.team?.name ?? null,
         })
 
         return contact

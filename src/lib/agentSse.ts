@@ -46,6 +46,8 @@ export type AgentEvent =
           assignedToId: string | null
           assignedToName: string | null
           assignedToImage?: string | null
+          teamId?: string | null
+          teamName?: string | null
       }
     | {
           type: 'user_viewing'

@@ -106,6 +106,7 @@ model Organization {
   assignmentRules AssignmentRule[]
   messageTemplates MessageTemplate[]
   products         Product[]
+  teams            Team[]
   // Facebook App credentials (por organização)
   fbAppId     String?
   fbAppSecret String?
@@ -148,6 +149,7 @@ model Contact {
   externalId     String?  // ID externo (ex: número WhatsApp)
   notes          String?
   assignedToId   String?
+  teamId         String?  // time responsável (opcional)
   convStatus     String   @default("open")  // 'open' | 'pending' | 'resolved'
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt
@@ -155,6 +157,7 @@ model Contact {
   organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   channel      Channel?     @relation(fields: [channelId], references: [id], onDelete: SetNull)
   assignedTo   User?        @relation("AssignedContacts", fields: [assignedToId], references: [id], onDelete: SetNull)
+  team         Team?        @relation(fields: [teamId], references: [id], onDelete: SetNull)
   messages      Message[]
   tags          ContactTag[]
   campaignLeads CampaignLead[]
@@ -228,9 +231,41 @@ model Member {
   organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
   customRole   CustomRole?  @relation(fields: [customRoleId], references: [id], onDelete: SetNull)
+  teamMembers  TeamMember[]
 
   @@unique([organizationId, userId])
   @@map("members")
+}
+
+// ─── Teams ─────────────────────────────────────────────────────────────────────
+
+model Team {
+  id             String   @id @default(cuid())
+  organizationId String
+  name           String
+  description    String?
+  color          String   @default("#6366f1")
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  members      TeamMember[]
+  contacts     Contact[]
+
+  @@map("teams")
+}
+
+model TeamMember {
+  id       String   @id @default(cuid())
+  teamId   String
+  memberId String
+  createdAt DateTime @default(now())
+
+  team   Team   @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  member Member @relation(fields: [memberId], references: [id], onDelete: Cascade)
+
+  @@unique([teamId, memberId])
+  @@map("team_members")
 }
 
 model CustomRole {
