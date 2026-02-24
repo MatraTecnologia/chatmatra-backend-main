@@ -3,6 +3,11 @@
 // Events are keyed by organizationId so each agent only receives events for
 // their own org. The widget inbound message handler and the messages route call
 // publishToOrg() after saving a message to fan-out to all watching agents.
+//
+// ⚡ WebSocket: publishToOrg agora também emite via Socket.io (presence.ts).
+// O SSE in-memory é mantido para compatibilidade com rotas de widget ainda não migradas.
+
+import { emitAgentEvent } from './presence.js'
 
 export type AgentEvent =
     | {
@@ -110,8 +115,12 @@ export function subscribeOrg(orgId: string, userId: string, cb: (event: AgentEve
     }
 }
 
-/** Publish an event to all active SSE connections for this org. */
+/** Publish an event to all active connections for this org.
+ *  Emits via Socket.io (WebSocket) — SSE in-memory mantido para compatibilidade. */
 export function publishToOrg(orgId: string, event: AgentEvent): void {
+    // WebSocket: entrega principal via Socket.io
+    emitAgentEvent(orgId, event)
+    // SSE in-memory: mantido para rotas de widget/legado ainda conectadas via EventSource
     subscribers.get(orgId)?.forEach((subscriber) => subscriber.callback(event))
 }
 

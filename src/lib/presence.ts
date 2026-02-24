@@ -675,6 +675,15 @@ function broadcastToOrganization(organizationId: string, event: PresenceEvent) {
 }
 
 /**
+ * Emite um evento de agente (new_message, conv_updated) para toda a organização via Socket.io.
+ * Substitui o sistema SSE in-memory para entrega em tempo real.
+ */
+export function emitAgentEvent(organizationId: string, event: unknown): void {
+    if (!io) return
+    io.to(`org:${organizationId}`).emit('agent_event', event)
+}
+
+/**
  * Retorna usuários online de uma organização
  */
 export function getOnlineUsers(organizationId: string): UserPresence[] {
