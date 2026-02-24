@@ -1,7 +1,7 @@
 import type { FastifyInstance } from 'fastify'
 import { requireAuth } from '../../lib/session.js'
 import { prisma } from '../../lib/prisma.js'
-import { publish } from '../../lib/widgetSse.js'
+import { emitWidgetMessage } from '../../lib/presence.js'
 
 export default async function (app: FastifyInstance) {
 
@@ -150,14 +150,14 @@ export default async function (app: FastifyInstance) {
             },
         })
 
-        // Push to widget SSE stream when an outbound message is saved for an api channel
+        // Push to widget WebSocket room when an outbound message is saved for an api channel
         if (body.direction === 'outbound' && body.channelId) {
             const channel = await prisma.channel.findUnique({
                 where: { id: body.channelId },
                 select: { type: true },
             })
             if (channel?.type === 'api') {
-                publish(body.contactId, {
+                emitWidgetMessage(body.contactId, {
                     id:         message.id,
                     contactId:  message.contactId,
                     direction:  message.direction as 'outbound' | 'inbound',

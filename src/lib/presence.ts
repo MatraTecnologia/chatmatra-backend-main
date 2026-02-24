@@ -3,6 +3,7 @@
 
 import { Server as SocketServer, type Socket } from 'socket.io'
 import type { Server as HTTPServer } from 'http'
+import { prisma } from './prisma.js'
 
 export type UserPresence = {
     userId: string
@@ -65,7 +66,8 @@ let io: SocketServer | null = null
 export function initializePresenceSystem(httpServer: HTTPServer): SocketServer {
     io = new SocketServer(httpServer, {
         cors: {
-            origin: process.env.FRONTEND_URL || 'http://localhost:3000',
+            // Reflete a origem da request — permite dashboard (com cookies) e widget embarcado (qualquer site)
+            origin: true,
             credentials: true,
         },
         pingInterval: 20000, // Heartbeat a cada 20s
@@ -176,6 +178,19 @@ function handleConnection(socket: Socket) {
     // Input do usuário
     socket.on('user_input', (data: { field: string; value: string; type: string; route: string; timestamp: string }) => {
         handleUserInputGlobal(socket.id, data)
+    })
+
+    // ── Widget (chat embarcado em sites externos) ────────────────────────────
+    // Autentica o widget via apiKey e entra na sala do contato.
+    socket.on('widget_connect', async (data: { key: string; contactId: string }) => {
+        try {
+            const channel = await prisma.channel.findFirst({
+                where: { apiKey: data.key, type: 'api' },
+                select: { id: true },
+            })
+            if (!channel) { socket.disconnect(); return }
+            socket.join(`widget:${data.contactId}`)
+        } catch { socket.disconnect() }
     })
 
     // Desconexão
@@ -681,6 +696,15 @@ function broadcastToOrganization(organizationId: string, event: PresenceEvent) {
 export function emitAgentEvent(organizationId: string, event: unknown): void {
     if (!io) return
     io.to(`org:${organizationId}`).emit('agent_event', event)
+}
+
+/**
+ * Emite uma mensagem para o widget de chat do contato via Socket.io.
+ * Substitui o sistema SSE widgetSse para entrega em tempo real.
+ */
+export function emitWidgetMessage(contactId: string, msg: unknown): void {
+    if (!io) return
+    io.to(`widget:${contactId}`).emit('widget_message', msg)
 }
 
 /**

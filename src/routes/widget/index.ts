@@ -1,6 +1,5 @@
-import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify'
+import type { FastifyInstance } from 'fastify'
 import { prisma } from '../../lib/prisma.js'
-import { subscribe } from '../../lib/widgetSse.js'
 import { publishToOrg } from '../../lib/agentSse.js'
 import { processAutoAssignment } from '../../lib/assignmentEngine.js'
 
@@ -266,55 +265,5 @@ export default async function (app: FastifyInstance) {
         return reply.status(201).send(message)
     })
 
-    // ── GET /widget/sse/:contactId ────────────────────────────────────────────
-    // SSE stream. Agent outbound replies are pushed here in real-time.
-    // ?key=<apiKey>  (EventSource does not support custom headers)
-
-    app.get('/sse/:contactId', {
-        schema: { tags: ['Widget'], summary: 'Stream SSE de respostas do agente' },
-    }, async (request: FastifyRequest, reply: FastifyReply) => {
-        const { contactId } = request.params as { contactId: string }
-        const apiKey = (request.query as Record<string, string>).key
-
-        setCors(reply)
-
-        const resolved = await resolveChannel(apiKey)
-        if (!resolved) return reply.status(401).send({ error: 'API key inválida.' })
-
-        const { channel } = resolved
-        const contact = await resolveContact(contactId, channel.id, channel.organizationId)
-        if (!contact) return reply.status(403).send({ error: 'Sessão inválida.' })
-
-        // Hijack the response so Fastify does not finalize it
-        reply.hijack()
-        reply.raw.writeHead(200, {
-            'Content-Type':                'text/event-stream',
-            'Cache-Control':               'no-cache',
-            'Connection':                  'keep-alive',
-            'Access-Control-Allow-Origin': '*',
-            'X-Accel-Buffering':           'no', // disable nginx buffering
-        })
-
-        // Initial connected event
-        reply.raw.write('event: connected\ndata: {}\n\n')
-
-        // Subscribe to pub/sub
-        const unsubscribe = subscribe(contactId, (msg) => {
-            reply.raw.write(`event: message\ndata: ${JSON.stringify(msg)}\n\n`)
-        })
-
-        // Heartbeat every 25 seconds to keep connection alive through proxies
-        const heartbeat = setInterval(() => {
-            reply.raw.write(': ping\n\n')
-        }, 25_000)
-
-        // Cleanup when client disconnects
-        request.raw.on('close', () => {
-            clearInterval(heartbeat)
-            unsubscribe()
-        })
-
-        // Keep the handler alive (never resolve the promise)
-        await new Promise<void>(() => {})
-    })
 }
+

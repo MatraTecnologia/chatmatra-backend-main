@@ -20,12 +20,12 @@
     }
 
     // ── State ────────────────────────────────────────────────────────────────
-    let state      = 'closed'   // 'closed' | 'form' | 'chat'
-    let contactId  = null
-    let contactName = null
+    let state        = 'closed'   // 'closed' | 'form' | 'chat'
+    let contactId    = null
+    let contactName  = null
     let contactPhone = null
-    let eventSource = null
-    let messagesEl  = null
+    let widgetSocket = null
+    let messagesEl   = null
     let cfg = {
         primaryColor:   '#6366f1',
         agentName:      'Suporte',
@@ -376,7 +376,7 @@ select.mc-phone-country:focus { border-color: var(--mc-primary); }
         document.body.appendChild(widget)
 
         loadHistory()
-        connectSse()
+        connectSocket()
     }
 
     function doSend() {

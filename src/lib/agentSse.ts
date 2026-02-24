@@ -1,11 +1,7 @@
-// ─── Agent SSE Pub/Sub ────────────────────────────────────────────────────────
+// ─── Agent Event Pub/Sub ──────────────────────────────────────────────────────
 // Publishes real-time events to all agent dashboard connections of an org.
 // Events are keyed by organizationId so each agent only receives events for
-// their own org. The widget inbound message handler and the messages route call
-// publishToOrg() after saving a message to fan-out to all watching agents.
-//
-// ⚡ WebSocket: publishToOrg agora também emite via Socket.io (presence.ts).
-// O SSE in-memory é mantido para compatibilidade com rotas de widget ainda não migradas.
+// their own org. Delivery is exclusively via Socket.io (WebSocket).
 
 import { emitAgentEvent } from './presence.js'
 
@@ -87,11 +83,6 @@ export type AgentEvent =
           users: OnlineUser[]
       }
 
-type SubscriberCallback = {
-    userId: string
-    callback: (event: AgentEvent) => void
-}
-
 type OnlineUser = {
     userId: string
     userName: string
@@ -101,29 +92,11 @@ type OnlineUser = {
     connectedAt: Date
 }
 
-const subscribers = new Map<string, Set<SubscriberCallback>>()
 const onlineUsers = new Map<string, Map<string, OnlineUser>>() // orgId -> userId -> OnlineUser
 
-/** Subscribe to all events for an org. Returns an unsubscribe function. */
-export function subscribeOrg(orgId: string, userId: string, cb: (event: AgentEvent) => void): () => void {
-    if (!subscribers.has(orgId)) subscribers.set(orgId, new Set())
-    const subscriber: SubscriberCallback = { userId, callback: cb }
-    subscribers.get(orgId)!.add(subscriber)
-    return () => {
-        const set = subscribers.get(orgId)
-        if (!set) return
-        set.delete(subscriber)
-        if (set.size === 0) subscribers.delete(orgId)
-    }
-}
-
-/** Publish an event to all active connections for this org.
- *  Emits via Socket.io (WebSocket) — SSE in-memory mantido para compatibilidade. */
+/** Publica um evento para todos os agentes da org via WebSocket (Socket.io). */
 export function publishToOrg(orgId: string, event: AgentEvent): void {
-    // WebSocket: entrega principal via Socket.io
     emitAgentEvent(orgId, event)
-    // SSE in-memory: mantido para rotas de widget/legado ainda conectadas via EventSource
-    subscribers.get(orgId)?.forEach((subscriber) => subscriber.callback(event))
 }
 
 /** Adiciona ou atualiza usuário online */
@@ -149,7 +122,6 @@ export function setUserOnline(orgId: string, userId: string, userName: string, u
         })
     }
 
-    // Broadcast evento de presença atualizada
     publishToOrg(orgId, {
         type: 'user_viewing',
         contactId: contactId ?? '',
