@@ -57,6 +57,7 @@ export function startMessageWorker() {
             publishToOrg(organizationId, {
                 type: 'new_message',
                 contactId:        contact.id,
+                assignedToId:     contact.assignedToId,
                 channelId,
                 externalId:       contact.externalId,
                 contactName:      contact.name,
@@ -189,6 +190,7 @@ export function startMessageWorker() {
             publishToOrg(organizationId, {
                 type: 'new_message',
                 contactId:        contact.id,
+                assignedToId:     contact.assignedToId,
                 channelId,
                 externalId:       contact.externalId,
                 contactName:      contact.name,

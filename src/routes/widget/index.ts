@@ -83,7 +83,7 @@ async function resolveChannel(apiKey: string): Promise<{
 async function resolveContact(contactId: string, channelId: string, orgId: string) {
     return prisma.contact.findFirst({
         where: { id: contactId, channelId, organizationId: orgId },
-        select: { id: true, name: true },
+        select: { id: true, name: true, assignedToId: true },
     })
 }
 
@@ -247,6 +247,7 @@ export default async function (app: FastifyInstance) {
         publishToOrg(channel.organizationId, {
             type: 'new_message',
             contactId,
+            assignedToId: contact.assignedToId,
             message: {
                 id: message.id,
                 direction: 'inbound',

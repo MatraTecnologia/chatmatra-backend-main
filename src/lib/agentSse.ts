@@ -13,6 +13,8 @@ export type AgentEvent =
     | {
           type: 'new_message'
           contactId: string
+          /** ID do agente atribuído ao contato — usado para filtrar notificações */
+          assignedToId?: string | null
           /** Canal pelo qual a mensagem chegou (necessário para enviar resposta) */
           channelId?: string | null
           /** JID / externalId do contato (necessário para enviar resposta via WhatsApp) */
