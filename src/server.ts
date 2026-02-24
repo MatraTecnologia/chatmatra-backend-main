@@ -10,8 +10,8 @@ import { initializePresenceSystem } from './lib/presence.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 
-// bodyLimit aumentado para 10 MB para suportar logos em base64 (imagem 2 MB ≈ 2,7 MB em base64)
-const app = Fastify({ logger: true, bodyLimit: 10 * 1024 * 1024 })
+// bodyLimit aumentado para 100 MB para suportar webhooks com histórico grande da Evolution API e logos em base64
+const app = Fastify({ logger: true, bodyLimit: 100 * 1024 * 1024 })
 
 await app.register(fastifyCors, {
     // Reflete a origem da request — necessário para suportar tanto o dashboard
