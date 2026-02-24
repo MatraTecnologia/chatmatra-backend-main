@@ -1,0 +1,59 @@
+// ─── BullMQ Queue Definitions ─────────────────────────────────────────────────
+// Centraliza a criação das filas e a conexão Redis compartilhada.
+// Os workers são inicializados em server.ts após o app subir.
+
+import { Queue } from 'bullmq'
+import IORedis from 'ioredis'
+
+// ─── Conexão Redis ─────────────────────────────────────────────────────────────
+const redisUrl = process.env.REDIS_URL || 'redis://localhost:6379'
+
+export const redisConnection = new IORedis(redisUrl, {
+    // BullMQ exige maxRetriesPerRequest: null para funcionar corretamente
+    maxRetriesPerRequest: null,
+    enableReadyCheck: false,
+})
+
+redisConnection.on('connect', () => console.log('✅ Redis conectado'))
+redisConnection.on('error', (err) => console.error('❌ Erro Redis:', err.message))
+
+// ─── Tipos dos jobs ────────────────────────────────────────────────────────────
+
+/** Job de processamento de mensagem recebida via webhook Evolution API */
+export type MessageJobData = {
+    channelId: string
+    organizationId: string
+    channelName: string
+    key: { remoteJid?: string; fromMe?: boolean; id?: string }
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    message: any
+    pushName?: string
+}
+
+/** Job de sincronização de histórico de todos os canais da org */
+export type SyncAllHistoryJobData = {
+    orgId: string
+    userId: string
+}
+
+/** Job de sincronização de mensagens de um contato específico */
+export type SyncContactJobData = {
+    contactId: string
+    orgId: string
+}
+
+// ─── Filas ─────────────────────────────────────────────────────────────────────
+
+const queueOptions = {
+    connection: redisConnection,
+    defaultJobOptions: {
+        removeOnComplete: 200,  // mantém últimos 200 completados para histórico
+        removeOnFail: 100,      // mantém últimos 100 falhos para depuração
+    },
+}
+
+/** Fila para processamento de mensagens do webhook */
+export const messageQueue = new Queue<MessageJobData>('webhook-messages', queueOptions)
+
+/** Fila para sincronizações de histórico */
+export const syncQueue = new Queue<SyncAllHistoryJobData | SyncContactJobData>('sync-history', queueOptions)
