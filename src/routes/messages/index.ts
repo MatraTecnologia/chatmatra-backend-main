@@ -62,6 +62,7 @@ export default async function (app: FastifyInstance) {
                     channelId: true,
                     externalId: true,
                     createdAt: true,
+                    user: { select: { id: true, name: true, image: true } },
                 },
             })
             // Inverte para exibição cronológica (mais antigas no topo)
@@ -86,6 +87,7 @@ export default async function (app: FastifyInstance) {
                     channelId: true,
                     externalId: true,
                     createdAt: true,
+                    user: { select: { id: true, name: true, image: true } },
                 },
             }),
         ])
@@ -144,9 +146,11 @@ export default async function (app: FastifyInstance) {
                 channelId:      body.channelId,
                 direction:      body.direction,
                 type:           body.type,
-                content:        body.content, // Salva conteúdo original sem modificação
+                content:        body.content,
                 status:         body.status ?? 'sent',
                 externalId:     body.externalId,
+                // Registra o agente que enviou (apenas para mensagens outbound do painel)
+                userId:         body.direction === 'outbound' ? userId : undefined,
             },
         })
 
