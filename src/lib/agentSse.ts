@@ -25,7 +25,10 @@ export type AgentEvent =
               type: string
               content: string
               status: string
+              channelId?: string | null
               createdAt: string
+              /** Agente que enviou — preenchido apenas para mensagens outbound do painel */
+              user?: { id: string; name: string; image?: string | null } | null
           }
           /** Preenchido quando o contato foi criado agora (primeiro contato) */
           contact?: {

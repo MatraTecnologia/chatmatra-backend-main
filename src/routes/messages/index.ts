@@ -2,6 +2,7 @@ import type { FastifyInstance } from 'fastify'
 import { requireAuth } from '../../lib/session.js'
 import { prisma } from '../../lib/prisma.js'
 import { emitWidgetMessage } from '../../lib/presence.js'
+import { publishToOrg } from '../../lib/agentSse.js'
 
 export default async function (app: FastifyInstance) {
 
@@ -153,6 +154,38 @@ export default async function (app: FastifyInstance) {
                 userId:         body.direction === 'outbound' ? userId : undefined,
             },
         })
+
+        // Broadcast mensagem em tempo real para todos os agentes da org
+        {
+            const [contact, sender] = await Promise.all([
+                prisma.contact.findUnique({
+                    where: { id: body.contactId },
+                    select: { assignedToId: true, externalId: true, name: true, avatarUrl: true },
+                }),
+                body.direction === 'outbound'
+                    ? prisma.user.findUnique({ where: { id: userId }, select: { id: true, name: true, image: true } })
+                    : null,
+            ])
+            publishToOrg(orgId, {
+                type: 'new_message',
+                contactId:        body.contactId,
+                assignedToId:     contact?.assignedToId ?? null,
+                channelId:        body.channelId ?? null,
+                externalId:       contact?.externalId ?? null,
+                contactName:      contact?.name ?? null,
+                contactAvatarUrl: contact?.avatarUrl ?? null,
+                message: {
+                    id:        message.id,
+                    direction: body.direction,
+                    type:      body.type,
+                    content:   body.content,
+                    status:    message.status,
+                    channelId: body.channelId ?? null,
+                    createdAt: message.createdAt.toISOString(),
+                    user:      sender ?? null,
+                },
+            })
+        }
 
         // Push to widget WebSocket room when an outbound message is saved for an api channel
         if (body.direction === 'outbound' && body.channelId) {
