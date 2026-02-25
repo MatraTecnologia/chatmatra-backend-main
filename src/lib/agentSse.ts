@@ -48,6 +48,8 @@ export type AgentEvent =
           assignedToImage?: string | null
           teamId?: string | null
           teamName?: string | null
+          /** Novo canal do contato — preenchido quando a instância mudou */
+          channelId?: string | null
       }
     | {
           type: 'user_viewing'

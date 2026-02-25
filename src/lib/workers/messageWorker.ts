@@ -22,8 +22,8 @@ export function startMessageWorker() {
                 if (existing) return
             }
 
-            // Busca ou cria contato
-            let contact = await prisma.contact.findFirst({ where: { organizationId, externalId: from } })
+            // Busca ou cria contato — inclui channelId na busca para isolar conversas por instância
+            let contact = await prisma.contact.findFirst({ where: { organizationId, externalId: from, channelId } })
             let isNewContact = false
             if (!contact) {
                 contact = await prisma.contact.create({
@@ -132,9 +132,9 @@ export function startMessageWorker() {
 
             const direction = fromMe ? 'outbound' : 'inbound'
 
-            // Busca ou cria o contato pelo JID
+            // Busca ou cria o contato pelo JID — inclui channelId para isolar conversas por instância
             let contact = await prisma.contact.findFirst({
-                where: { organizationId, externalId: remoteJid },
+                where: { organizationId, externalId: remoteJid, channelId },
             })
 
             let isNewContact = false
@@ -155,14 +155,10 @@ export function startMessageWorker() {
                     },
                 })
                 isNewContact = true
-            } else {
-                if (!fromMe && pushName && pushName !== contact.name) {
-                    await prisma.contact.update({
-                        where: { id: contact.id },
-                        data: { name: pushName },
-                    })
-                    contact.name = pushName
-                }
+            } else if (!fromMe && pushName && pushName !== contact.name) {
+                // Atualiza nome se o pushName mudou (dentro da mesma instância)
+                await prisma.contact.update({ where: { id: contact.id }, data: { name: pushName } })
+                contact = { ...contact, name: pushName }
             }
 
             // Evita duplicata se a mensagem já foi salva (webhook retried)
