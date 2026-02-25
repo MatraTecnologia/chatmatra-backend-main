@@ -606,6 +606,9 @@ export default async function (app: FastifyInstance) {
                 ...(body.channelId    !== undefined && { channelId:    body.channelId }),
                 ...(body.assignedToId !== undefined && { assignedToId: body.assignedToId ?? null }),
             },
+            include: {
+                assignedTo: { select: { name: true, image: true } },
+            },
         })
 
         if (body.assignedToId !== undefined) {
@@ -614,7 +617,8 @@ export default async function (app: FastifyInstance) {
                 contactId: id,
                 convStatus: updated.convStatus,
                 assignedToId: updated.assignedToId,
-                assignedToName: null,
+                assignedToName: updated.assignedTo?.name ?? null,
+                assignedToImage: updated.assignedTo?.image ?? null,
             })
         }
 

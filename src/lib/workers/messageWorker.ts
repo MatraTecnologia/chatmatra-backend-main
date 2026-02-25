@@ -6,6 +6,7 @@ import { Worker } from 'bullmq'
 import { redisConnection, type MessageJobData, type WaBusinessMessageJobData } from '../queue.js'
 import { prisma } from '../prisma.js'
 import { publishToOrg } from '../agentSse.js'
+import { processAutoAssignment } from '../assignmentEngine.js'
 
 type WhatsAppConfig = {
     evolutionUrl: string
@@ -134,6 +135,11 @@ export function startMessageWorker() {
                         assignedToName: null,
                     })
                 }
+            }
+
+            // Auto-atribuição: só para inbound sem agente atribuído
+            if (!contact.assignedToId) {
+                void processAutoAssignment(contact.id, organizationId)
             }
             return
         }
@@ -269,6 +275,11 @@ export function startMessageWorker() {
                         assignedToName: null,
                     })
                 }
+            }
+
+            // Auto-atribuição: só para inbound sem agente atribuído
+            if (!fromMe && !contact.assignedToId) {
+                void processAutoAssignment(contact.id, organizationId)
             }
         },
         {

@@ -1,6 +1,7 @@
 import { Contact, Member } from '@prisma/client';
 import { log } from './logger.js';
 import { prisma } from './prisma.js';
+import { publishToOrg } from './agentSse.js';
 
 // Tipo temporário até executar a migração
 type AssignmentRule = {
@@ -233,25 +234,25 @@ export async function assignContact(
   organizationId: string
 ): Promise<boolean> {
   try {
-    // Atualiza o contato
     const contact = await prisma.contact.update({
       where: { id: contactId },
       data: { assignedToId: assigneeId },
       include: {
         assignedTo: {
-          select: { name: true }
+          select: { name: true, image: true }
         }
       }
     });
 
-    // TODO: Publicar evento SSE conv_updated
-    // publishToOrg(organizationId, {
-    //   type: 'conv_updated',
-    //   contactId,
-    //   convStatus: contact.convStatus,
-    //   assignedToId: assigneeId,
-    //   assignedToName: contact.assignedTo?.name ?? null
-    // });
+    // Notifica todos os agentes da org em tempo real
+    publishToOrg(organizationId, {
+      type: 'conv_updated',
+      contactId,
+      convStatus: contact.convStatus,
+      assignedToId: assigneeId,
+      assignedToName: contact.assignedTo?.name ?? null,
+      assignedToImage: contact.assignedTo?.image ?? null,
+    });
 
     return true;
 
