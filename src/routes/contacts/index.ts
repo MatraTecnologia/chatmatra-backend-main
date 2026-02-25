@@ -237,6 +237,41 @@ export default async function (app: FastifyInstance) {
         return { total, page, limit, contacts }
     })
 
+    // GET /contacts/:id — retorna um contato pelo ID
+    app.get('/:id', {
+        preHandler: requireAuth,
+        schema: {
+            params: { type: 'object', properties: { id: { type: 'string' } } },
+        },
+    }, async (request, reply) => {
+        const { id } = request.params as { id: string }
+        const userId = request.session.user.id
+        const orgId  = request.organizationId
+        if (!orgId) return reply.status(400).send({ error: 'Nenhuma organização detectada para este domínio.' })
+
+        const isMember = await prisma.member.findFirst({ where: { organizationId: orgId, userId } })
+        if (!isMember) return reply.status(403).send({ error: 'Sem permissão.' })
+
+        const contact = await prisma.contact.findUnique({
+            where: { id },
+            select: {
+                id: true, name: true, phone: true, email: true, avatarUrl: true,
+                channelId: true, externalId: true, notes: true,
+                convStatus: true, assignedToId: true, teamId: true, createdAt: true,
+                channel:    { select: { id: true, name: true, type: true, status: true } },
+                tags:       { select: { tag: { select: { id: true, name: true, color: true } } } },
+                assignedTo: { select: { id: true, name: true, image: true } },
+                team:       { select: { id: true, name: true, color: true } },
+            },
+        })
+        if (!contact) return reply.status(404).send({ error: 'Contato não encontrado.' })
+        if (contact.channelId) {
+            const ch = await prisma.channel.findUnique({ where: { id: contact.channelId }, select: { organizationId: true } })
+            if (ch && ch.organizationId !== orgId) return reply.status(403).send({ error: 'Sem permissão.' })
+        }
+        return contact
+    })
+
     // POST /contacts/sync/:channelId — importa contatos da instância WhatsApp
     app.post('/sync/:channelId', {
         preHandler: requireAuth,
