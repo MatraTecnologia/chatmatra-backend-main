@@ -235,8 +235,6 @@ export function startMessageWorker() {
         {
             connection: redisConnection,
             concurrency: 10,
-            attempts: 3,
-            backoff: { type: 'exponential', delay: 1000 },
         }
     )
 

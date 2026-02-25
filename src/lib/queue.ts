@@ -60,6 +60,8 @@ export type SyncContactJobData = {
 const queueOptions = {
     connection: redisConnection,
     defaultJobOptions: {
+        attempts: 3,
+        backoff: { type: 'exponential', delay: 1000 },
         removeOnComplete: 200,  // mantém últimos 200 completados para histórico
         removeOnFail: 100,      // mantém últimos 100 falhos para depuração
     },
