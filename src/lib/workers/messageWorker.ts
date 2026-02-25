@@ -7,6 +7,41 @@ import { redisConnection, type MessageJobData, type WaBusinessMessageJobData } f
 import { prisma } from '../prisma.js'
 import { publishToOrg } from '../agentSse.js'
 
+type WhatsAppConfig = {
+    evolutionUrl: string
+    evolutionApiKey: string
+    instanceName: string
+    phone?: string
+}
+
+/** Busca foto de perfil de um JID na Evolution API e atualiza o contato em background. */
+async function fetchAndSaveAvatar(contactId: string, channelId: string, jid: string): Promise<void> {
+    try {
+        const channel = await prisma.channel.findUnique({ where: { id: channelId } })
+        if (!channel || channel.type !== 'whatsapp') return
+
+        const cfg = channel.config as WhatsAppConfig
+        if (!cfg?.evolutionUrl || !cfg?.evolutionApiKey || !cfg?.instanceName) return
+
+        const url = `${cfg.evolutionUrl.replace(/\/$/, '')}/chat/fetchProfilePictureUrl/${cfg.instanceName}`
+        const res = await fetch(url, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'apikey': cfg.evolutionApiKey },
+            body: JSON.stringify({ number: jid }),
+        })
+
+        if (!res.ok) return
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const data = await res.json() as any
+        const avatarUrl = data?.profilePictureUrl as string | undefined
+        if (!avatarUrl) return
+
+        await prisma.contact.update({ where: { id: contactId }, data: { avatarUrl } })
+    } catch {
+        // silencioso — avatar é opcional
+    }
+}
+
 export function startMessageWorker() {
     const worker = new Worker<MessageJobData | WaBusinessMessageJobData>(
         'webhook-messages',
@@ -37,6 +72,8 @@ export function startMessageWorker() {
                     },
                 })
                 isNewContact = true
+                // Busca foto de perfil em background (não bloqueia o processamento)
+                void fetchAndSaveAvatar(contact.id, channelId, from)
             }
 
             const createdAt = timestamp ? new Date(Number(timestamp) * 1000) : new Date()
@@ -155,6 +192,8 @@ export function startMessageWorker() {
                     },
                 })
                 isNewContact = true
+                // Busca foto de perfil em background (não bloqueia o processamento)
+                void fetchAndSaveAvatar(contact.id, channelId, remoteJid)
             } else if (!fromMe && pushName && pushName !== contact.name) {
                 // Atualiza nome se o pushName mudou (dentro da mesma instância)
                 await prisma.contact.update({ where: { id: contact.id }, data: { name: pushName } })
