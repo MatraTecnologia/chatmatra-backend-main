@@ -925,19 +925,41 @@ export default async function (app: FastifyInstance) {
           })
         }
 
-        if (!result.data?.base64) {
-          log.error('UAZAPI retornou sem base64')
-          return reply
-            .status(502)
-            .send({ error: 'Mídia não disponível no UAZAPI.' })
+        const mimeType =
+          (result.data.mimetype as string) ?? 'application/octet-stream'
+
+        // UAZAPI retorna fileURL — baixa e converte para base64
+        if (result.data?.fileURL) {
+          const fileRes = await fetch(result.data.fileURL as string)
+          if (!fileRes.ok) {
+            log.error(
+              `Erro ao baixar mídia da URL: ${result.data.fileURL} — status ${fileRes.status}`,
+            )
+            return reply
+              .status(502)
+              .send({ error: 'Erro ao baixar mídia do UAZAPI.' })
+          }
+          const buffer = Buffer.from(await fileRes.arrayBuffer())
+          return {
+            base64: buffer.toString('base64'),
+            mediaType: message.type,
+            mimeType,
+          }
         }
 
-        return {
-          base64: result.data.base64 as string,
-          mediaType: (result.data.mediaType as string) ?? message.type,
-          mimeType:
-            (result.data.mimetype as string) ?? 'application/octet-stream',
+        // Fallback: base64 direto (caso futuro)
+        if (result.data?.base64) {
+          return {
+            base64: result.data.base64 as string,
+            mediaType: message.type,
+            mimeType,
+          }
         }
+
+        log.error('UAZAPI retornou sem fileURL nem base64')
+        return reply
+          .status(502)
+          .send({ error: 'Mídia não disponível no UAZAPI.' })
       } catch (error) {
         log.error(
           `Erro ao buscar mídia: ${error instanceof Error ? error.message : error}`,
@@ -1139,7 +1161,9 @@ export default async function (app: FastifyInstance) {
           senderName: msg.senderName ?? '',
           messageTimestamp: msg.messageTimestamp ?? Date.now(),
           chatImage: body.chat?.image,
-        }).catch((err) => log.error(`[Webhook] Erro ao processar mensagem ${msg.id}: ${err}`))
+        }).catch(err =>
+          log.error(`[Webhook] Erro ao processar mensagem ${msg.id}: ${err}`),
+        )
       }
 
       // ── contacts: sync contact name and avatar ───────────────
