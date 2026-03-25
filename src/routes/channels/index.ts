@@ -1116,9 +1116,9 @@ export default async function (app: FastifyInstance) {
           `📩 Webhook mensagem recebida - chatid: ${msg.chatid}, fromMe: ${msg.fromMe}, type: ${msg.type}, mediaType: ${msg.mediaType}, wasSentByApi: ${msg.wasSentByApi}, isGroup: ${msg.isGroup}, id: ${msg.id}`,
         )
 
-        if (msg.wasSentByApi || msg.isGroup) {
+        if (msg.wasSentByApi || msg.isGroup || msg.fromMe) {
           log.info(
-            `⏭️ Mensagem ignorada - wasSentByApi: ${msg.wasSentByApi}, isGroup: ${msg.isGroup}`,
+            `⏭️ Mensagem ignorada - wasSentByApi: ${msg.wasSentByApi}, isGroup: ${msg.isGroup}, fromMe: ${msg.fromMe}`,
           )
           return reply.status(200).send({ ok: true })
         }
