@@ -5,6 +5,7 @@ import { requireAuth } from '../../lib/session.js'
 import { prisma } from '../../lib/prisma.js'
 import { log } from '../../lib/logger.js'
 import { messageQueue, syncQueue, type WaBusinessMessageJobData } from '../../lib/queue.js'
+import { type UazapiConfig, uazapiFetch } from '../../lib/uazapi.js'
 
 // Gera instanceName: slug do nome + 8 chars hex aleatórios
 // ex: "Suporte WhatsApp" → "suporte-whatsapp-a3f9c12b"
@@ -19,15 +20,6 @@ function generateInstanceName(name: string): string {
     return `${slug}-${suffix}`
 }
 
-// ─── Helpers Evolution API ────────────────────────────────────────────────────
-
-type WhatsAppConfig = {
-    evolutionUrl: string
-    evolutionApiKey: string
-    instanceName: string
-    phone?: string
-}
-
 // ─── Helpers WhatsApp Business API (Meta) ─────────────────────────────────────
 
 type WhatsAppBusinessConfig = {
@@ -36,28 +28,6 @@ type WhatsAppBusinessConfig = {
     webhookVerifyToken: string  // Token de verificação do webhook
     businessAccountId?: string  // ID da conta comercial (opcional)
     phone?: string              // Número de telefone formatado
-}
-
-async function evolutionFetch(
-    config: Pick<WhatsAppConfig, 'evolutionUrl' | 'evolutionApiKey'>,
-    path: string,
-    options: RequestInit = {}
-) {
-    const url = `${config.evolutionUrl.replace(/\/$/, '')}${path}`
-    const res = await fetch(url, {
-        ...options,
-        headers: {
-            'Content-Type': 'application/json',
-            'apikey': config.evolutionApiKey,
-            ...options.headers,
-        },
-    })
-    const text = await res.text()
-    try {
-        return { ok: res.ok, status: res.status, data: JSON.parse(text) }
-    } catch {
-        return { ok: res.ok, status: res.status, data: text }
-    }
 }
 
 async function whatsappBusinessFetch(
@@ -96,18 +66,18 @@ const WA_COLORS: Record<number, string> = {
 
 export default async function (app: FastifyInstance) {
 
-    // GET /channels/evolution-defaults — retorna URL padrão da Evolution configurada via env
-    // A API key nunca é exposta; apenas informa se está configurada.
-    app.get('/evolution-defaults', {
+    // GET /channels/uazapi-defaults — retorna URL padrão do UAZAPI configurado via env
+    // O admin token nunca é exposto; apenas informa se está configurado.
+    app.get('/uazapi-defaults', {
         preHandler: requireAuth,
         schema: {
             tags: ['Channels'],
-            summary: 'Retorna configurações padrão da Evolution API (sem expor a key)',
+            summary: 'Retorna configurações padrão do UAZAPI (sem expor o admin token)',
         },
     }, async () => {
         return {
-            evolutionUrl:   process.env.EVOLUTION_URL   ?? '',
-            hasDefaultKey:  !!process.env.EVOLUTION_API_KEY,
+            uazapiUrl:            process.env.UAZAPI_URL ?? '',
+            hasDefaultAdminToken: !!process.env.UAZAPI_ADMIN_TOKEN,
         }
     })
 
@@ -139,15 +109,15 @@ export default async function (app: FastifyInstance) {
                 type: true,
                 status: true,
                 createdAt: true,
-                // config retornado SEM evolutionApiKey por segurança
+                // config retornado SEM tokens sensíveis por segurança
                 config: true,
             },
         })
 
-        // Oculta a API key antes de retornar
+        // Oculta tokens sensíveis antes de retornar
         return channels.map((ch) => {
             if (ch.config && typeof ch.config === 'object') {
-                const { evolutionApiKey: _k, ...safeConfig } = ch.config as Record<string, unknown>
+                const { uazapiAdminToken: _a, uazapiInstanceToken: _t, ...safeConfig } = ch.config as Record<string, unknown>
                 return { ...ch, config: safeConfig }
             }
             return ch
@@ -166,9 +136,9 @@ export default async function (app: FastifyInstance) {
                 properties: {
                     name: { type: 'string', minLength: 1 },
                     type: { type: 'string', enum: ['api', 'whatsapp', 'whatsapp-business'] },
-                    // WhatsApp Evolution API
-                    evolutionUrl: { type: 'string' },
-                    evolutionApiKey: { type: 'string' },
+                    // WhatsApp UAZAPI
+                    uazapiUrl: { type: 'string' },
+                    uazapiAdminToken: { type: 'string' },
                     // WhatsApp Business API (Meta)
                     phoneNumberId: { type: 'string' },
                     accessToken: { type: 'string' },
@@ -181,8 +151,8 @@ export default async function (app: FastifyInstance) {
         const body = request.body as {
             name: string
             type: 'api' | 'whatsapp' | 'whatsapp-business'
-            evolutionUrl?: string
-            evolutionApiKey?: string
+            uazapiUrl?: string
+            uazapiAdminToken?: string
             phoneNumberId?: string
             accessToken?: string
             webhookVerifyToken?: string
@@ -204,14 +174,14 @@ export default async function (app: FastifyInstance) {
         if (body.type === 'api') {
             config = { apiKey: crypto.randomBytes(24).toString('hex') }
         } else if (body.type === 'whatsapp') {
-            const evolutionUrl    = body.evolutionUrl    || process.env.EVOLUTION_URL    || ''
-            const evolutionApiKey = body.evolutionApiKey || process.env.EVOLUTION_API_KEY || ''
-            if (!evolutionUrl || !evolutionApiKey) {
-                return reply.status(400).send({ error: 'evolutionUrl e evolutionApiKey são obrigatórios (ou configure EVOLUTION_URL e EVOLUTION_API_KEY no servidor).' })
+            const uazapiUrl        = body.uazapiUrl        || process.env.UAZAPI_URL        || ''
+            const uazapiAdminToken = body.uazapiAdminToken || process.env.UAZAPI_ADMIN_TOKEN || ''
+            if (!uazapiUrl || !uazapiAdminToken) {
+                return reply.status(400).send({ error: 'uazapiUrl e uazapiAdminToken são obrigatórios (ou configure UAZAPI_URL e UAZAPI_ADMIN_TOKEN no servidor).' })
             }
             config = {
-                evolutionUrl,
-                evolutionApiKey,
+                uazapiUrl,
+                uazapiAdminToken,
                 instanceName: generateInstanceName(body.name),
             }
         } else if (body.type === 'whatsapp-business') {
@@ -233,7 +203,7 @@ export default async function (app: FastifyInstance) {
                 type: body.type,
                 // Canais API não precisam de conexão externa — já nascem ativos.
                 // WhatsApp Business API também já nasce ativo (não precisa QR code)
-                // Canais WhatsApp (Evolution) começam como 'pending' até o QR code ser escaneado.
+                // Canais WhatsApp (UAZAPI) começam como 'pending' até o QR code ser escaneado.
                 status: body.type === 'whatsapp' ? 'pending' : 'connected',
                 config: config as Prisma.InputJsonValue,
             },
@@ -260,10 +230,10 @@ export default async function (app: FastifyInstance) {
         const isMember = await prisma.member.findFirst({ where: { organizationId: channel.organizationId, userId } })
         if (!isMember) return reply.status(403).send({ error: 'Sem permissão.' })
 
-        // Hide internal Evolution API key but expose widget apiKey
+        // Hide internal tokens but expose widget apiKey
         const config = channel.config && typeof channel.config === 'object'
             ? (() => {
-                const { evolutionApiKey: _k, ...safe } = channel.config as Record<string, unknown>
+                const { uazapiAdminToken: _a, uazapiInstanceToken: _t, ...safe } = channel.config as Record<string, unknown>
                 return safe
             })()
             : channel.config
@@ -334,10 +304,10 @@ export default async function (app: FastifyInstance) {
             },
         })
 
-        // Return without internal Evolution API key
+        // Return without internal UAZAPI tokens
         const safeConfig = updated.config && typeof updated.config === 'object'
             ? (() => {
-                const { evolutionApiKey: _k, ...safe } = updated.config as Record<string, unknown>
+                const { uazapiAdminToken: _a, uazapiInstanceToken: _t, ...safe } = updated.config as Record<string, unknown>
                 return safe
             })()
             : updated.config
@@ -363,10 +333,12 @@ export default async function (app: FastifyInstance) {
         const isMember = await prisma.member.findFirst({ where: { organizationId: channel.organizationId, userId } })
         if (!isMember) return reply.status(403).send({ error: 'Sem permissão.' })
 
-        // Se for WhatsApp, apaga a instância na Evolution API
+        // Se for WhatsApp, desconecta a instância no UAZAPI
         if (channel.type === 'whatsapp' && channel.config) {
-            const cfg = channel.config as WhatsAppConfig
-            await evolutionFetch(cfg, `/instance/delete/${cfg.instanceName}`, { method: 'DELETE' }).catch(() => null)
+            const cfg = channel.config as UazapiConfig
+            if (cfg.uazapiInstanceToken) {
+                await uazapiFetch(cfg.uazapiUrl, '/instance/disconnect', { instanceToken: cfg.uazapiInstanceToken }, { method: 'POST' }).catch(() => null)
+            }
         }
 
         await prisma.channel.delete({ where: { id } })
@@ -374,12 +346,12 @@ export default async function (app: FastifyInstance) {
     })
 
     // POST /channels/:id/whatsapp/connect
-    // Cria a instância na Evolution API (ou reconecta) e retorna o QR code
+    // Cria a instância no UAZAPI (ou reconecta) e retorna o QR code
     app.post('/:id/whatsapp/connect', {
         preHandler: requireAuth,
         schema: {
             tags: ['Channels'],
-            summary: 'Inicia conexão WhatsApp via Evolution API e retorna QR code',
+            summary: 'Inicia conexão WhatsApp via UAZAPI e retorna QR code',
             params: { type: 'object', properties: { id: { type: 'string' } } },
         },
     }, async (request, reply) => {
@@ -394,55 +366,55 @@ export default async function (app: FastifyInstance) {
         const isMember = await prisma.member.findFirst({ where: { organizationId: channel.organizationId, userId } })
         if (!isMember) return reply.status(403).send({ error: 'Sem permissão.' })
 
-        const cfg = channel.config as WhatsAppConfig
+        const cfg = channel.config as UazapiConfig
+        let instanceToken = cfg.uazapiInstanceToken
 
-        // Tenta criar a instância (se já existir a Evolution API retorna erro, ignoramos)
+        // 1. Init instance if no token yet
+        if (!instanceToken) {
+            const initResult = await uazapiFetch(cfg.uazapiUrl, '/instance/init', { adminToken: cfg.uazapiAdminToken }, {
+                method: 'POST',
+                body: JSON.stringify({ name: cfg.instanceName }),
+            })
+            if (!initResult.ok || !initResult.data?.token) {
+                return reply.status(502).send({ error: 'Não foi possível criar a instância no UAZAPI.', detail: initResult.data })
+            }
+            instanceToken = initResult.data.token as string
+            // Save token in config
+            await prisma.channel.update({
+                where: { id },
+                data: { config: { ...cfg, uazapiInstanceToken: instanceToken } as Prisma.InputJsonValue },
+            })
+        }
+
+        // 2. Configure webhook
         const backendUrl = (process.env.BACKEND_URL ?? '').replace(/\/$/, '')
-        const webhookEvents = ['MESSAGES_UPSERT', 'CONNECTION_UPDATE', 'MESSAGES_UPDATE', 'SEND_MESSAGE']
-        await evolutionFetch(cfg, '/instance/create', {
-            method: 'POST',
-            body: JSON.stringify({
-                instanceName: cfg.instanceName,
-                qrcode: true,
-                integration: 'WHATSAPP-BAILEYS',
-                syncFullHistory: true,
-                ...(backendUrl && {
-                    webhook: {
-                        url: `${backendUrl}/channels/whatsapp/webhook`,
-                        byEvents: false,
-                        base64: true,
-                        events: webhookEvents,
-                    },
-                }),
-            }),
-        })
-
-        // Garante webhook atualizado mesmo se a instância já existia
         if (backendUrl) {
-            await evolutionFetch(cfg, `/webhook/set/${cfg.instanceName}`, {
+            await uazapiFetch(cfg.uazapiUrl, '/webhook', { instanceToken }, {
                 method: 'POST',
                 body: JSON.stringify({
                     url: `${backendUrl}/channels/whatsapp/webhook`,
-                    webhook_by_events: false,
-                    webhook_base64: true,
-                    events: webhookEvents,
+                    events: ['messages', 'connection', 'labels', 'chat_labels', 'contacts'],
+                    excludeMessages: ['wasSentByApi'],
                 }),
             }).catch(() => null)
         }
 
-        // Busca o QR code
-        const qrResult = await evolutionFetch(cfg, `/instance/connect/${cfg.instanceName}`)
+        // 3. Connect (triggers QR code generation)
+        await uazapiFetch(cfg.uazapiUrl, '/instance/connect', { instanceToken }, { method: 'POST' })
 
-        if (!qrResult.ok) {
-            return reply.status(502).send({ error: 'Não foi possível obter o QR code da Evolution API.' })
+        // 4. Get status with QR code
+        const statusResult = await uazapiFetch(cfg.uazapiUrl, '/instance/status', { instanceToken })
+
+        if (!statusResult.ok) {
+            return reply.status(502).send({ error: 'Não foi possível obter o QR code do UAZAPI.' })
         }
 
-        // Atualiza status para 'connecting'
+        // Update status to connecting
         await prisma.channel.update({ where: { id }, data: { status: 'connecting' } })
 
         return {
-            qrCode: qrResult.data?.base64 ?? null,
-            pairingCode: qrResult.data?.pairingCode ?? null,
+            qrCode: statusResult.data?.qrcode ?? statusResult.data?.instance?.qrcode ?? null,
+            pairingCode: statusResult.data?.paircode ?? null,
         }
     })
 
@@ -470,24 +442,19 @@ export default async function (app: FastifyInstance) {
             return reply.status(409).send({ error: 'Canal não está conectado.' })
         }
 
-        const cfg = channel.config as WhatsAppConfig
+        const cfg = channel.config as UazapiConfig
 
         if (!cfg.phone) {
             return reply.status(400).send({ error: 'Canal não possui número de telefone configurado.' })
         }
 
         try {
-            const profileResult = await evolutionFetch(cfg, `/chat/fetchProfilePictureUrl/${cfg.instanceName}`, {
-                method: 'POST',
-                body: JSON.stringify({
-                    number: cfg.phone.replace(/\D/g, ''), // remove caracteres não numéricos
-                }),
-            })
+            const statusResult = await uazapiFetch(cfg.uazapiUrl, '/instance/status', { instanceToken: cfg.uazapiInstanceToken })
 
-            if (profileResult.ok && profileResult.data?.profilePictureUrl) {
+            if (statusResult.ok && statusResult.data?.profilePicUrl) {
                 const updatedConfig = {
                     ...(channel.config as Record<string, unknown>),
-                    profilePictureUrl: profileResult.data.profilePictureUrl,
+                    profilePictureUrl: statusResult.data.profilePicUrl,
                 }
 
                 await prisma.channel.update({
@@ -497,14 +464,14 @@ export default async function (app: FastifyInstance) {
 
                 return {
                     success: true,
-                    profilePictureUrl: profileResult.data.profilePictureUrl,
+                    profilePictureUrl: statusResult.data.profilePicUrl,
                 }
             }
 
             return reply.status(404).send({ error: 'Foto do perfil não encontrada.' })
         } catch (err) {
             log.error(`Erro ao buscar foto do perfil: ${err}`)
-            return reply.status(502).send({ error: 'Erro ao buscar foto do perfil da Evolution API.' })
+            return reply.status(502).send({ error: 'Erro ao buscar foto do perfil do UAZAPI.' })
         }
     })
 
@@ -528,55 +495,38 @@ export default async function (app: FastifyInstance) {
         const isMember = await prisma.member.findFirst({ where: { organizationId: channel.organizationId, userId } })
         if (!isMember) return reply.status(403).send({ error: 'Sem permissão.' })
 
-        const cfg = channel.config as WhatsAppConfig
+        const cfg = channel.config as UazapiConfig
 
-        // Busca informações da instância usando fetchInstances
-        const result = await evolutionFetch(cfg, `/instance/fetchInstances/${cfg.instanceName}`)
+        if (!cfg.uazapiInstanceToken) {
+            return { channelStatus: channel.status, instanceState: 'unknown' }
+        }
+
+        const result = await uazapiFetch(cfg.uazapiUrl, '/instance/status', { instanceToken: cfg.uazapiInstanceToken })
 
         if (!result.ok) {
             return { channelStatus: channel.status, instanceState: 'unknown' }
         }
 
-        // A resposta de fetchInstances retorna a instância diretamente
-        const instanceData = result.data
-        const instanceState: string = instanceData?.instance?.state ?? 'unknown'
-        const instanceNumber: string | undefined = instanceData?.instance?.owner ?? undefined
+        const instanceState: string = result.data?.status ?? result.data?.instance?.status ?? 'unknown'
+        const instanceNumber: string | undefined = result.data?.owner || undefined
+        const profilePicUrl: string | undefined = result.data?.profilePicUrl || undefined
+        const qrCode: string | undefined = result.data?.qrcode || result.data?.instance?.qrcode || undefined
 
-        // Sincroniza status no banco
-        const statusMap: Record<string, string> = {
-            open: 'connected',
-            connecting: 'connecting',
-            close: 'disconnected',
-        }
-        const newStatus = statusMap[instanceState] ?? channel.status
+        // UAZAPI states map directly
+        const newStatus = instanceState === 'connected' ? 'connected'
+            : instanceState === 'connecting' ? 'connecting'
+            : instanceState === 'disconnected' ? 'disconnected'
+            : channel.status
 
-        // Atualiza status, telefone e foto se houver mudanças
-        const currentProfilePic = (cfg as any).profilePictureUrl
-        const needsUpdate = newStatus !== channel.status || (instanceNumber && !cfg.phone) || !currentProfilePic
+        const currentProfilePic = cfg.profilePictureUrl
+        const needsUpdate = newStatus !== channel.status || (instanceNumber && !cfg.phone) || (!currentProfilePic && profilePicUrl)
 
         let finalConfig = cfg
         if (needsUpdate) {
             const updatedConfig: any = {
                 ...cfg,
                 ...(instanceNumber ? { phone: instanceNumber } : {}),
-            }
-
-            // Busca foto do perfil se ainda não tem
-            if (instanceNumber && !currentProfilePic) {
-                try {
-                    const profileResult = await evolutionFetch(cfg, `/chat/fetchProfilePictureUrl/${cfg.instanceName}`, {
-                        method: 'POST',
-                        body: JSON.stringify({
-                            number: instanceNumber.replace(/\D/g, ''),
-                        }),
-                    })
-                    if (profileResult.ok && profileResult.data?.profilePictureUrl) {
-                        updatedConfig.profilePictureUrl = profileResult.data.profilePictureUrl
-                        log.info(`✅ Foto do perfil sincronizada para canal ${channel.name}: ${profileResult.data.profilePictureUrl}`)
-                    }
-                } catch (err) {
-                    log.warn(`⚠️ Erro ao buscar foto do perfil na rota de status: ${err}`)
-                }
+                ...(profilePicUrl && !currentProfilePic ? { profilePictureUrl: profilePicUrl } : {}),
             }
 
             await prisma.channel.update({
@@ -595,11 +545,12 @@ export default async function (app: FastifyInstance) {
             channelStatus: newStatus,
             instanceState,
             phone: instanceNumber ?? cfg.phone,
-            profilePictureUrl: (finalConfig as any).profilePictureUrl
+            profilePictureUrl: (finalConfig as any).profilePictureUrl,
+            ...(qrCode ? { qrCode } : {}),
         }
     })
 
-    // POST /channels/:id/whatsapp/send — envia mensagem de texto ou mídia via Evolution API
+    // POST /channels/:id/whatsapp/send — envia mensagem de texto ou mídia via UAZAPI
     app.post('/:id/whatsapp/send', {
         preHandler: requireAuth,
         schema: {
@@ -650,7 +601,7 @@ export default async function (app: FastifyInstance) {
             return reply.status(409).send({ error: 'Canal não está conectado.' })
         }
 
-        const cfg = channel.config as WhatsAppConfig
+        const cfg = channel.config as UazapiConfig
 
         // Remove sufixo @s.whatsapp.net se vier o JID completo
         const cleanNumber = number.includes('@') ? number.split('@')[0] : number
@@ -659,19 +610,19 @@ export default async function (app: FastifyInstance) {
 
         if (mediaMessage) {
             // Envia mídia
-            result = await evolutionFetch(cfg, `/message/sendMedia/${cfg.instanceName}`, {
+            result = await uazapiFetch(cfg.uazapiUrl, '/send/media', { instanceToken: cfg.uazapiInstanceToken }, {
                 method: 'POST',
                 body: JSON.stringify({
                     number: cleanNumber,
-                    mediatype: mediaMessage.mediatype,
-                    fileName: mediaMessage.fileName,
-                    media: mediaMessage.media,
-                    caption: mediaMessage.caption,
+                    type: mediaMessage.mediatype,
+                    file: mediaMessage.media,
+                    text: mediaMessage.caption,
+                    docName: mediaMessage.fileName,
                 }),
             })
         } else if (text) {
             // Envia texto
-            result = await evolutionFetch(cfg, `/message/sendText/${cfg.instanceName}`, {
+            result = await uazapiFetch(cfg.uazapiUrl, '/send/text', { instanceToken: cfg.uazapiInstanceToken }, {
                 method: 'POST',
                 body: JSON.stringify({ number: cleanNumber, text }),
             })
@@ -691,7 +642,7 @@ export default async function (app: FastifyInstance) {
         preHandler: requireAuth,
         schema: {
             tags: ['Channels'],
-            summary: 'Busca base64 de mensagem de mídia via Evolution API',
+            summary: 'Busca base64 de mensagem de mídia via UAZAPI',
             params: { type: 'object', properties: { id: { type: 'string' }, messageId: { type: 'string' } } },
         },
     }, async (request, reply) => {
@@ -724,218 +675,193 @@ export default async function (app: FastifyInstance) {
             return reply.status(400).send({ error: 'Mensagem sem ID externo do WhatsApp.' })
         }
 
-        const cfg = channel.config as WhatsAppConfig
-        const waKey = {
-            id:        message.externalId,
-            remoteJid: message.contact.externalId,
-            fromMe:    message.direction === 'outbound',
-        }
-
-        const mediaEndpoint = `/chat/getBase64FromMediaMessage/${cfg.instanceName}`
-        const requestBody = {
-            message: {
-                key: {
-                    id: waKey.id,
-                    remoteJid: waKey.remoteJid,
-                    fromMe: waKey.fromMe,
-                }
-            },
-            convertToMp4: false,
-        }
+        const cfg = channel.config as UazapiConfig
 
         try {
-            const result = await evolutionFetch(cfg, mediaEndpoint, {
+            const result = await uazapiFetch(cfg.uazapiUrl, '/message/download', { instanceToken: cfg.uazapiInstanceToken }, {
                 method: 'POST',
-                body: JSON.stringify(requestBody),
+                body: JSON.stringify({ id: message.externalId }),
             })
 
             if (!result.ok) {
-                log.error(`Evolution API erro ao buscar mídia: Status ${result.status}`)
+                log.error(`UAZAPI erro ao buscar mídia: Status ${result.status}`)
                 return reply.status(502).send({
-                    error: 'Não foi possível obter a mídia da Evolution API.',
+                    error: 'Não foi possível obter a mídia do UAZAPI.',
                     details: result.data,
                 })
             }
 
             if (!result.data?.base64) {
-                log.error('Evolution API retornou sem base64')
-                return reply.status(502).send({ error: 'Mídia não disponível na Evolution API.' })
+                log.error('UAZAPI retornou sem base64')
+                return reply.status(502).send({ error: 'Mídia não disponível no UAZAPI.' })
             }
 
-            const mediaData = {
+            return {
                 base64:    result.data.base64 as string,
                 mediaType: result.data.mediaType as string ?? message.type,
                 mimeType:  result.data.mimetype  as string ?? 'application/octet-stream',
             }
-
-            return mediaData
         } catch (error) {
             log.error(`Erro ao buscar mídia: ${error instanceof Error ? error.message : error}`)
-            return reply.status(502).send({ error: 'Erro ao comunicar com Evolution API.' })
+            return reply.status(502).send({ error: 'Erro ao comunicar com UAZAPI.' })
         }
     })
 
-    // POST /channels/whatsapp/webhook — recebe eventos da Evolution API
-    // Configure a URL no painel da Evolution API: POST /channels/whatsapp/webhook
+    // POST /channels/whatsapp/webhook — recebe eventos do UAZAPI
+    // Configure a URL no painel do UAZAPI: POST /channels/whatsapp/webhook
     app.post('/whatsapp/webhook', {
         schema: {
-            summary: 'Webhook para eventos da Evolution API',
+            summary: 'Webhook para eventos do UAZAPI',
         } as never,
     }, async (request, reply) => {
-        type WaContact = {
-            id?: string        // JID
-            name?: string
-            pushName?: string
-            profilePictureUrl?: string
-        }
-        type WaDataObj = {
-            // CONNECTION_UPDATE
-            state?: string
-            number?: string
-            // MESSAGES_UPSERT
-            key?: { remoteJid?: string; fromMe?: boolean; id?: string }
-            message?: { conversation?: string; extendedTextMessage?: { text?: string } }
-            messageType?: string
-            pushName?: string
-            // LABELS_ASSOCIATION
-            id?: string
-            label?: { id?: string; name?: string; color?: number; colorHex?: string }
-            type?: string
-            // LABELS_EDIT
-            name?: string
-            color?: number
-            colorHex?: string
-            deleted?: boolean
-        }
         const body = request.body as {
-            event?: string
-            instance?: string
-            data?: WaDataObj | WaContact[]
+            BaseUrl?: string
+            EventType?: string
+            instanceName?: string
+            owner?: string
+            token?: string
+            instance?: {
+                status?: string
+                qrcode?: string
+                name?: string
+                profilePicUrl?: string
+                lastDisconnect?: string
+                lastDisconnectReason?: string
+            }
+            message?: {
+                id?: string
+                chatid?: string
+                fromMe?: boolean
+                isGroup?: boolean
+                type?: string
+                mediaType?: string
+                messageType?: string
+                content?: any
+                text?: string
+                senderName?: string
+                messageTimestamp?: number
+                wasSentByApi?: boolean
+            }
+            chat?: {
+                phone?: string
+                name?: string
+                image?: string
+                wa_chatid?: string
+                wa_name?: string
+                wa_contactName?: string
+                wa_label?: any[]
+            }
+            // contacts event (array at top level)
+            contacts?: Array<{ id?: string; name?: string; phone?: string; image?: string }>
         }
 
-        // Normaliza event name: Evolution API pode enviar "messages.upsert" ou "MESSAGES_UPSERT"
-        // Converte para o formato padrão UPPERCASE_UNDERSCORE
-        const event = (body.event ?? '').toUpperCase().replace(/\./g, '_')
+        const event = (body.EventType ?? '').toLowerCase()
 
-        // Normaliza: contacts events têm data como array, demais como objeto
-        const dataArr: WaContact[] | null = Array.isArray(body.data) ? body.data as WaContact[] : null
-        const dataObj: WaDataObj | undefined = !Array.isArray(body.data) ? body.data as WaDataObj : undefined
+        if (!body.instanceName) return reply.status(200).send({ ok: true })
 
-        if (!body.instance) return reply.status(200).send({ ok: true })
-
-        // Encontra o canal pela instanceName
-        const channels = await prisma.channel.findMany({
-            where: { type: 'whatsapp' },
-        })
-
+        // Find channel by instanceName
+        const channels = await prisma.channel.findMany({ where: { type: 'whatsapp' } })
         const channel = channels.find((ch) => {
-            const cfg = ch.config as WhatsAppConfig | null
-            return cfg?.instanceName === body.instance
+            const cfg = ch.config as UazapiConfig | null
+            return cfg?.instanceName === body.instanceName
         })
 
         if (!channel) {
-            log.warn(`webhook: instância "${body.instance}" não encontrada no banco`)
+            log.warn(`webhook: instância "${body.instanceName}" não encontrada no banco`)
             return reply.status(200).send({ ok: true })
         }
 
-        // ── CONNECTION_UPDATE: atualiza status ───────────────────────────────
-        const stateToStatus: Record<string, string> = {
-            open: 'connected',
-            connecting: 'connecting',
-            close: 'disconnected',
-        }
+        // ── connection: update status ───────────────────────────────
+        if (event === 'connection' && body.instance) {
+            const instanceStatus = body.instance.status ?? ''
+            const newStatus = instanceStatus === 'connected' ? 'connected'
+                : instanceStatus === 'connecting' ? 'connecting'
+                : instanceStatus === 'disconnected' ? 'disconnected'
+                : null
 
-        const instanceState = dataObj?.state ?? ''
-        const newStatus = stateToStatus[instanceState]
+            log.info(`📞 connection - Canal: ${channel.name}, Estado: ${instanceStatus}, Número: ${body.owner ?? 'N/A'}`)
 
-        if (event === 'CONNECTION_UPDATE') {
-            log.info(`📞 CONNECTION_UPDATE - Canal: ${channel.name}, Estado: ${instanceState}, Número: ${dataObj?.number ?? 'N/A'}`)
-        }
+            if (newStatus) {
+                const currentConfig = channel.config as Record<string, unknown>
+                const phoneNumber = body.owner || (channel.config as UazapiConfig).phone
 
-        if (newStatus) {
-            const currentConfig = channel.config as Record<string, unknown>
-            const phoneNumber = dataObj?.number ?? (channel.config as WhatsAppConfig).phone
+                await prisma.channel.update({
+                    where: { id: channel.id },
+                    data: {
+                        status: newStatus,
+                        config: { ...currentConfig, phone: phoneNumber } as Prisma.InputJsonValue,
+                    },
+                })
+                log.info(`✅ Canal ${channel.name} atualizado - Status: ${newStatus}, Phone: ${phoneNumber ?? 'N/A'}`)
 
-            // Salva status e telefone imediatamente — não espera pela foto do perfil
-            await prisma.channel.update({
-                where: { id: channel.id },
-                data: {
-                    status: newStatus,
-                    config: { ...currentConfig, phone: phoneNumber } as Prisma.InputJsonValue,
-                },
-            })
-            log.info(`✅ Canal ${channel.name} atualizado - Status: ${newStatus}, Phone: ${phoneNumber ?? 'N/A'}`)
-
-            // Busca foto do perfil em background (não bloqueia o webhook)
-            if (newStatus === 'connected' && phoneNumber) {
-                const cfg = channel.config as WhatsAppConfig
-                const cleanNumber = phoneNumber.replace(/\D/g, '')
-                evolutionFetch(cfg, `/chat/fetchProfilePictureUrl/${cfg.instanceName}`, {
-                    method: 'POST',
-                    body: JSON.stringify({ number: cleanNumber }),
-                }).then(async (profileResult) => {
-                    if (profileResult.ok && profileResult.data?.profilePictureUrl) {
-                        await prisma.channel.update({
-                            where: { id: channel.id },
-                            data: { config: { ...currentConfig, phone: phoneNumber, profilePictureUrl: profileResult.data.profilePictureUrl } as Prisma.InputJsonValue },
-                        })
-                        log.info(`✅ Foto do perfil salva para ${channel.name}`)
-                    }
-                }).catch((err: unknown) => log.warn(`⚠️ Foto do perfil falhou: ${err}`))
+                // Fetch profile pic in background
+                if (newStatus === 'connected' && body.instance.profilePicUrl) {
+                    prisma.channel.update({
+                        where: { id: channel.id },
+                        data: { config: { ...currentConfig, phone: phoneNumber, profilePictureUrl: body.instance.profilePicUrl } as Prisma.InputJsonValue },
+                    }).then(() => log.info(`✅ Foto do perfil salva para ${channel.name}`))
+                      .catch((err: unknown) => log.warn(`⚠️ Foto do perfil falhou: ${err}`))
+                }
             }
         }
 
-        // ── MESSAGES_UPSERT: enfileira sem bloquear o webhook ───────────────
-        if (event === 'MESSAGES_UPSERT' && dataObj?.key) {
+        // ── messages: enqueue for async processing ───────────────
+        if (event === 'messages' && body.message) {
+            const msg = body.message
+            if (msg.wasSentByApi || msg.isGroup) {
+                return reply.status(200).send({ ok: true })
+            }
+
             messageQueue.add('process-message', {
                 channelId:      channel.id,
                 organizationId: channel.organizationId,
                 channelName:    channel.name,
-                key:            dataObj.key,
-                message:        dataObj.message,
-                pushName:       dataObj.pushName,
+                chatId:         msg.chatid ?? '',
+                fromMe:         msg.fromMe ?? false,
+                messageId:      msg.id ?? '',
+                type:           msg.type ?? 'text',
+                mediaType:      msg.mediaType ?? '',
+                messageType:    msg.messageType ?? '',
+                content:        msg.content ?? '',
+                text:           msg.text ?? '',
+                senderName:     msg.senderName ?? '',
+                messageTimestamp: msg.messageTimestamp ?? Date.now(),
+                chatImage:      body.chat?.image,
             }).catch((err: unknown) => log.error(`[Webhook] Falha ao enfileirar mensagem: ${err}`))
         }
 
-        // ── CONTACTS_UPSERT / CONTACTS_UPDATE: sincroniza nome e foto do contato ────
-        if ((event === 'CONTACTS_UPSERT' || event === 'CONTACTS_UPDATE') && dataArr && dataArr.length > 0) {
-            for (const waContact of dataArr) {
-                const jid = waContact.id ?? ''
-                if (!jid || (!jid.includes('@s.whatsapp.net') && !jid.includes('@c.us'))) continue
+        // ── contacts: sync contact name and avatar ───────────────
+        if (event === 'contacts' && body.contacts && body.contacts.length > 0) {
+            for (const waContact of body.contacts) {
+                const phone = waContact.phone ?? ''
+                if (!phone) continue
 
-                const newName = (waContact.name || waContact.pushName || '').trim()
-                const profilePictureUrl = waContact.profilePictureUrl
-
-                // Monta os dados para atualização
+                const jid = `${phone}@s.whatsapp.net`
                 const updateData: Record<string, string> = {}
-                if (newName) updateData.name = newName
-                if (profilePictureUrl) updateData.avatarUrl = profilePictureUrl
+                if (waContact.name) updateData.name = waContact.name
+                if (waContact.image) updateData.avatarUrl = waContact.image
 
-                // Atualiza contato se houver dados para atualizar
                 if (Object.keys(updateData).length > 0) {
                     await prisma.contact.updateMany({
-                        where: {
-                            organizationId: channel.organizationId,
-                            externalId: jid,
-                        },
+                        where: { organizationId: channel.organizationId, externalId: jid },
                         data: updateData,
                     })
                 }
             }
         }
 
-        // ── LABELS_EDIT: renomeia ou remove tag quando label muda no WA ──────
-        if (event === 'LABELS_EDIT' && dataObj) {
+        // ── labels: rename or delete tag when WA label changes ───
+        if (event === 'labels' && body.instance) {
+            // UAZAPI fires labels event — handle similar to LABELS_EDIT
+            // Payload structure may vary; handle gracefully
+            const dataObj = body as any
             const waLabelId = (dataObj.id ?? '').toString().trim()
             const newName   = (dataObj.name ?? '').trim()
             const deleted   = dataObj.deleted ?? false
-            const color     = dataObj.colorHex ??
-                (dataObj.color !== undefined ? WA_COLORS[dataObj.color] : undefined)
+            const color     = dataObj.colorHex ?? (dataObj.color !== undefined ? WA_COLORS[dataObj.color] : undefined)
 
             if (waLabelId) {
-                // eslint-disable-next-line @typescript-eslint/no-explicit-any
                 const pc = prisma as any
-                // Busca a tag pelo waLabelId (preciso) ou pelo nome (fallback)
                 const tag = await pc.tag.findFirst({
                     where: {
                         organizationId: channel.organizationId,
@@ -955,7 +881,7 @@ export default async function (app: FastifyInstance) {
                             data: {
                                 ...(newName && newName !== tag.name ? { name: newName } : {}),
                                 ...(color ? { color } : {}),
-                                waLabelId,   // garante que está salvo
+                                waLabelId,
                             },
                         })
                     }
@@ -963,14 +889,16 @@ export default async function (app: FastifyInstance) {
             }
         }
 
-        // ── LABELS_ASSOCIATION: sincroniza label do WA com ContactTag ───────
-        if (event === 'LABELS_ASSOCIATION' && dataObj) {
-            const { id: jid, label, type: assocType } = dataObj
+        // ── chat_labels: sync label association with ContactTag ──
+        if (event === 'chat_labels') {
+            const dataObj = body as any
+            const jid = (dataObj.chatid ?? dataObj.id ?? '').toString().trim()
+            const label = dataObj.label
             const labelName  = (label?.name ?? '').trim()
             const waLabelId  = (label?.id ?? '').toString().trim()
+            const assocType  = dataObj.type ?? dataObj.action ?? ''
 
             if (jid && labelName && (jid.includes('@s.whatsapp.net') || jid.includes('@c.us'))) {
-                // eslint-disable-next-line @typescript-eslint/no-explicit-any
                 const pc = prisma as any
                 const contact = await pc.contact.findFirst({
                     where: { organizationId: channel.organizationId, externalId: jid },
@@ -978,7 +906,6 @@ export default async function (app: FastifyInstance) {
 
                 if (contact) {
                     if (assocType === 'add') {
-                        // Busca tag pelo waLabelId primeiro (mais preciso), depois pelo nome
                         let tag = await pc.tag.findFirst({
                             where: {
                                 organizationId: channel.organizationId,
@@ -999,7 +926,6 @@ export default async function (app: FastifyInstance) {
                                 },
                             })
                         } else if (waLabelId && !tag.waLabelId) {
-                            // Retroativamente salva o waLabelId se ainda não estava preenchido
                             await pc.tag.update({ where: { id: tag.id }, data: { waLabelId } })
                         }
                         await pc.contactTag.upsert({
@@ -1055,10 +981,10 @@ export default async function (app: FastifyInstance) {
             return reply.status(409).send({ error: 'Canal não está conectado.' })
         }
 
-        const cfg = channel.config as WhatsAppConfig
+        const cfg = channel.config as UazapiConfig
 
-        // Busca labels na Evolution API
-        const result = await evolutionFetch(cfg, `/label/findLabels/${cfg.instanceName}`)
+        // Busca labels no UAZAPI
+        const result = await uazapiFetch(cfg.uazapiUrl, '/labels', { instanceToken: cfg.uazapiInstanceToken })
 
         if (!result.ok) {
             return reply.status(502).send({ error: 'Não foi possível buscar as labels do WhatsApp.', detail: result.data })
@@ -1114,7 +1040,7 @@ export default async function (app: FastifyInstance) {
     })
 
     // POST /channels/:id/whatsapp/sync-label-contacts
-    // Lê os chats da Evolution API (que incluem as labels de cada conversa) e associa
+    // Lê os chats do UAZAPI (que incluem as labels de cada conversa) e associa
     // cada contato existente no banco às tags correspondentes da organização.
     app.post('/:id/whatsapp/sync-label-contacts', {
         preHandler: requireAuth,
@@ -1139,12 +1065,12 @@ export default async function (app: FastifyInstance) {
             return reply.status(409).send({ error: 'Canal não está conectado.' })
         }
 
-        const cfg = channel.config as WhatsAppConfig
+        const cfg = channel.config as UazapiConfig
 
-        // Busca todos os chats da Evolution API — cada chat inclui o array "labels"
-        const result = await evolutionFetch(cfg, `/chat/findChats/${cfg.instanceName}`, {
+        // Busca todos os chats do UAZAPI — cada chat inclui o array "labels"
+        const result = await uazapiFetch(cfg.uazapiUrl, '/chat/find', { instanceToken: cfg.uazapiInstanceToken }, {
             method: 'POST',
-            body: JSON.stringify({}),
+            body: JSON.stringify({ wa_isGroup: false }),
         })
 
         if (!result.ok) {
@@ -1205,7 +1131,7 @@ export default async function (app: FastifyInstance) {
     })
 
     // POST /channels/:id/whatsapp/sync-history
-    // Importa o histórico de mensagens da Evolution API para o banco de dados.
+    // Importa o histórico de mensagens do UAZAPI para o banco de dados.
     // Para cada chat individual, busca as mensagens e salva (upsert por externalId).
     // Aceita parâmetro opcional `limit` (máx de mensagens por contato, default 200).
     app.post('/:id/whatsapp/sync-history', {
@@ -1234,12 +1160,12 @@ export default async function (app: FastifyInstance) {
             return reply.status(409).send({ error: 'Canal não está conectado.' })
         }
 
-        const cfg = channel.config as WhatsAppConfig
+        const cfg = channel.config as UazapiConfig
 
         // 1. Busca todos os chats da instância
-        const chatsResult = await evolutionFetch(cfg, `/chat/findChats/${cfg.instanceName}`, {
+        const chatsResult = await uazapiFetch(cfg.uazapiUrl, '/chat/find', { instanceToken: cfg.uazapiInstanceToken }, {
             method: 'POST',
-            body: JSON.stringify({}),
+            body: JSON.stringify({ wa_isGroup: false }),
         })
         if (!chatsResult.ok) {
             return reply.status(502).send({ error: 'Não foi possível buscar os chats.', detail: chatsResult.data })
@@ -1248,7 +1174,7 @@ export default async function (app: FastifyInstance) {
         type WaChat = { remoteJid?: string; id?: { remote?: string } }
         const chats: WaChat[] = Array.isArray(chatsResult.data) ? chatsResult.data : []
 
-        // Estrutura de uma mensagem retornada pela Evolution API
+        // Estrutura de uma mensagem retornada pelo UAZAPI
         type WaMessage = {
             key?: { remoteJid?: string; fromMe?: boolean; id?: string }
             message?: {
@@ -1273,17 +1199,14 @@ export default async function (app: FastifyInstance) {
             // Só processa conversas individuais
             if (!jid || (!jid.includes('@s.whatsapp.net') && !jid.includes('@c.us'))) continue
 
-            // 2. Busca mensagens deste chat na Evolution API
-            const msgsResult = await evolutionFetch(cfg, `/chat/findMessages/${cfg.instanceName}`, {
+            // 2. Busca mensagens deste chat no UAZAPI
+            const msgsResult = await uazapiFetch(cfg.uazapiUrl, '/message/find', { instanceToken: cfg.uazapiInstanceToken }, {
                 method: 'POST',
-                body: JSON.stringify({
-                    where: { key: { remoteJid: jid } },
-                    limit: msgLimit,
-                }),
+                body: JSON.stringify({ chatid: jid, ...(msgLimit ? { limit: msgLimit } : {}) }),
             })
             if (!msgsResult.ok) continue
 
-            // A Evolution API pode retornar mensagens em vários formatos:
+            // O UAZAPI pode retornar mensagens em vários formatos:
             // [ ...array... ]
             // { messages: [...] }
             // { messages: { records: [...], total: N } }
