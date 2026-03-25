@@ -83,7 +83,7 @@ async function resolveTemplate(
 
 export const auth = betterAuth({
   basePath: '/auth',
-  baseURL: process.env.BETTER_AUTH_URL ?? '*',
+  baseURL: process.env.BETTER_AUTH_URL ?? 'http://localhost:3333',
   database: prismaAdapter(prisma, {
     provider: 'postgresql',
   }),

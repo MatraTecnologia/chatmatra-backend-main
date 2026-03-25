@@ -21,7 +21,7 @@ await app.register(fastifyCors, {
   // (credenciais de sessão) quanto o widget embarcado em sites externos.
   // A segurança das rotas protegidas é garantida pelo requireAuth (sessão httpOnly),
   // e das rotas widget pela validação de apiKey + contactId no handler.
-  origin: ['http://localhost:3000', 'http://localhost:3333'],
+  origin: true,
   methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
   credentials: true,
   allowedHeaders: [
