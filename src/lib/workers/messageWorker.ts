@@ -18,6 +18,161 @@ async function saveAvatarIfAvailable(contactId: string, chatImage?: string): Pro
     }
 }
 
+/** Processa uma mensagem UAZAPI — chamada diretamente do webhook (sem BullMQ). */
+export async function processUazapiMessage(data: MessageJobData): Promise<void> {
+    const { channelId, organizationId, chatId, fromMe, messageId, type, mediaType, messageType, text, senderName, messageTimestamp, chatImage } = data
+
+    log.info(`📨 Processando mensagem - chatId: ${chatId}, fromMe: ${fromMe}, type: ${type}, mediaType: ${mediaType}, messageId: ${messageId}`)
+
+    // Só processa mensagens individuais (não grupos)
+    if (!chatId.includes('@s.whatsapp.net') && !chatId.includes('@c.us')) {
+        log.warn(`⏭️ Mensagem descartada - chatId sem @s.whatsapp.net/@c.us: ${chatId}`)
+        return
+    }
+
+    // Mapeia tipo da mensagem UAZAPI → tipo interno
+    type MsgType = 'text' | 'image' | 'audio' | 'video' | 'document' | 'sticker'
+    let msgType: MsgType = 'text'
+    let content = text ?? ''
+
+    if (type === 'text') {
+        msgType = 'text'
+    } else if (mediaType === 'image')        { msgType = 'image' }
+    else if (mediaType === 'video')          { msgType = 'video' }
+    else if (mediaType === 'ptt')            { msgType = 'audio'; content = '' }
+    else if (mediaType === 'document')       { msgType = 'document' }
+    else if (mediaType === 'vcard')          { msgType = 'text' }
+    else if (messageType === 'StickerMessage') { msgType = 'sticker'; content = '' }
+    else if (messageType === 'LocationMessage') { content = '[Localização]' }
+    else if (messageType === 'ContactMessage') { content = content || '[Contato]' }
+    else if (messageType === 'ReactionMessage') { content = `[Reação: ${text ?? ''}]` }
+
+    const isMedia = ['image', 'audio', 'video', 'document', 'sticker'].includes(msgType)
+    if (!content && !isMedia) {
+        log.warn(`⏭️ Mensagem descartada - sem conteúdo. type: ${type}, mediaType: ${mediaType}, messageType: ${messageType}`)
+        return
+    }
+
+    const direction = fromMe ? 'outbound' : 'inbound'
+
+    // Busca ou cria o contato pelo chatId
+    let contact = await prisma.contact.findFirst({
+        where: { organizationId, externalId: chatId, channelId },
+    })
+
+    let isNewContact = false
+    if (!contact) {
+        const rawNumber = chatId.split('@')[0]
+        const contactName = fromMe
+            ? (rawNumber || 'Contato')
+            : (senderName || rawNumber || 'Desconhecido')
+
+        try {
+            contact = await prisma.contact.create({
+                data: {
+                    organizationId,
+                    channelId,
+                    externalId: chatId,
+                    phone: rawNumber ? `+${rawNumber}` : undefined,
+                    name: contactName,
+                    convStatus: 'pending',
+                },
+            })
+            isNewContact = true
+            void saveAvatarIfAvailable(contact.id, chatImage)
+        } catch {
+            // Race condition: outro request já criou o contato
+            contact = await prisma.contact.findFirst({
+                where: { organizationId, externalId: chatId, channelId },
+            })
+            if (!contact) throw new Error(`Contato não encontrado após race condition: ${chatId}`)
+        }
+    } else if (!fromMe && senderName && senderName !== contact.name) {
+        await prisma.contact.update({ where: { id: contact.id }, data: { name: senderName } })
+        contact = { ...contact, name: senderName }
+    }
+
+    // Evita duplicata (webhook pode reenviar)
+    if (messageId) {
+        const existing = await prisma.message.findFirst({
+            where: { organizationId, externalId: messageId },
+        })
+        if (existing) return
+    }
+
+    const createdAt = messageTimestamp ? new Date(messageTimestamp) : new Date()
+    const savedMsg = await prisma.message.create({
+        data: {
+            organizationId,
+            contactId:  contact.id,
+            channelId,
+            direction,
+            type:       msgType,
+            content,
+            status:     'sent',
+            externalId: messageId,
+            createdAt,
+        },
+    })
+
+    // Publica em tempo real para os agentes
+    publishToOrg(organizationId, {
+        type: 'new_message',
+        contactId:        contact.id,
+        assignedToId:     contact.assignedToId,
+        channelId,
+        externalId:       contact.externalId,
+        contactName:      contact.name,
+        contactAvatarUrl: contact.avatarUrl,
+        message: {
+            id:        savedMsg.id,
+            direction: direction as 'outbound' | 'inbound',
+            type:      msgType,
+            content,
+            status:    'sent',
+            createdAt: savedMsg.createdAt.toISOString(),
+        },
+        ...(isNewContact ? {
+            contact: {
+                id:         contact.id,
+                name:       contact.name,
+                phone:      contact.phone,
+                avatarUrl:  contact.avatarUrl,
+                externalId: contact.externalId,
+                channelId:  contact.channelId,
+                convStatus: 'pending',
+                createdAt:  contact.createdAt.toISOString(),
+            },
+        } : {}),
+    })
+
+    // Mensagem inbound → atualiza status do contato
+    if (!fromMe && !isNewContact) {
+        const needsStatusUpdate = !contact.convStatus || contact.convStatus === 'resolved'
+        const newStatus = needsStatusUpdate ? 'pending' : contact.convStatus
+        await prisma.contact.update({
+            where: { id: contact.id },
+            data: { convStatus: newStatus },
+        })
+        if (needsStatusUpdate) {
+            publishToOrg(organizationId, {
+                type: 'conv_updated',
+                contactId: contact.id,
+                convStatus: 'pending',
+                assignedToId: contact.assignedToId,
+                assignedToName: null,
+            })
+        }
+    }
+
+    // Auto-atribuição: só para inbound sem agente atribuído
+    if (!fromMe && !contact.assignedToId) {
+        void processAutoAssignment(contact.id, organizationId)
+    }
+
+    log.info(`✅ Mensagem processada - messageId: ${messageId}, contactId: ${contact.id}, direction: ${direction}`)
+}
+
 export function startMessageWorker() {
     const worker = new Worker<MessageJobData | WaBusinessMessageJobData>(
         'webhook-messages',
@@ -118,161 +273,8 @@ export function startMessageWorker() {
             return
         }
 
-        // ── UAZAPI ─────────────────────────────────────────────────────────────
-            const { channelId, organizationId, chatId, fromMe, messageId, type, mediaType, messageType, text, senderName, messageTimestamp, chatImage } = job.data as MessageJobData
-
-            log.info(`[Worker] Processando mensagem - chatId: ${chatId}, fromMe: ${fromMe}, type: ${type}, mediaType: ${mediaType}, messageId: ${messageId}`)
-
-            // Só processa mensagens individuais (não grupos)
-            if (!chatId.includes('@s.whatsapp.net') && !chatId.includes('@c.us')) {
-                log.warn(`[Worker] Mensagem descartada - chatId sem @s.whatsapp.net/@c.us: ${chatId}`)
-                return
-            }
-
-            // Mapeia tipo da mensagem UAZAPI → tipo interno
-            type MsgType = 'text' | 'image' | 'audio' | 'video' | 'document' | 'sticker'
-            let msgType: MsgType = 'text'
-            let content = text ?? ''
-
-            if (type === 'text') {
-                msgType = 'text'
-            } else if (mediaType === 'image')        { msgType = 'image' }
-            else if (mediaType === 'video')          { msgType = 'video' }
-            else if (mediaType === 'ptt')            { msgType = 'audio'; content = '' }
-            else if (mediaType === 'document')       { msgType = 'document' }
-            else if (mediaType === 'vcard')          { msgType = 'text' }
-            else if (messageType === 'StickerMessage') { msgType = 'sticker'; content = '' }
-            else if (messageType === 'LocationMessage') { content = '[Localização]' }
-            else if (messageType === 'ContactMessage') { content = content || '[Contato]' }
-            else if (messageType === 'ReactionMessage') { content = `[Reação: ${text ?? ''}]` }
-
-            const isMedia = ['image', 'audio', 'video', 'document', 'sticker'].includes(msgType)
-            if (!content && !isMedia) {
-                log.warn(`[Worker] Mensagem descartada - sem conteúdo e não é mídia. type: ${type}, mediaType: ${mediaType}, messageType: ${messageType}, text: "${text}"`)
-                return
-            }
-
-            const direction = fromMe ? 'outbound' : 'inbound'
-
-            // Busca ou cria o contato pelo chatId — inclui channelId para isolar conversas por instância
-            // Usa try-catch no create para lidar com race condition quando 2+ mensagens
-            // do mesmo contato chegam simultaneamente (concurrency do worker)
-            let contact = await prisma.contact.findFirst({
-                where: { organizationId, externalId: chatId, channelId },
-            })
-
-            let isNewContact = false
-            if (!contact) {
-                const rawNumber = chatId.split('@')[0]
-                const contactName = fromMe
-                    ? (rawNumber || 'Contato')
-                    : (senderName || rawNumber || 'Desconhecido')
-
-                try {
-                    contact = await prisma.contact.create({
-                        data: {
-                            organizationId,
-                            channelId,
-                            externalId: chatId,
-                            phone: rawNumber ? `+${rawNumber}` : undefined,
-                            name: contactName,
-                            convStatus: 'pending',
-                        },
-                    })
-                    isNewContact = true
-                    void saveAvatarIfAvailable(contact.id, chatImage)
-                } catch {
-                    // Race condition: outro job já criou o contato — busca novamente
-                    contact = await prisma.contact.findFirst({
-                        where: { organizationId, externalId: chatId, channelId },
-                    })
-                    if (!contact) throw new Error(`Contato não encontrado após race condition: ${chatId}`)
-                }
-            } else if (!fromMe && senderName && senderName !== contact.name) {
-                // Atualiza nome se mudou
-                await prisma.contact.update({ where: { id: contact.id }, data: { name: senderName } })
-                contact = { ...contact, name: senderName }
-            }
-
-            // Evita duplicata se a mensagem já foi salva (webhook retried)
-            if (messageId) {
-                const existing = await prisma.message.findFirst({
-                    where: { organizationId, externalId: messageId },
-                })
-                if (existing) return
-            }
-
-            const createdAt = messageTimestamp ? new Date(messageTimestamp) : new Date()
-            const savedMsg = await prisma.message.create({
-                data: {
-                    organizationId,
-                    contactId:  contact.id,
-                    channelId,
-                    direction,
-                    type:       msgType,
-                    content,
-                    status:     'sent',
-                    externalId: messageId,
-                    createdAt,
-                },
-            })
-
-            // Publica em tempo real para os agentes
-            publishToOrg(organizationId, {
-                type: 'new_message',
-                contactId:        contact.id,
-                assignedToId:     contact.assignedToId,
-                channelId,
-                externalId:       contact.externalId,
-                contactName:      contact.name,
-                contactAvatarUrl: contact.avatarUrl,
-                message: {
-                    id:        savedMsg.id,
-                    direction: direction as 'outbound' | 'inbound',
-                    type:      msgType,
-                    content,
-                    status:    'sent',
-                    createdAt: savedMsg.createdAt.toISOString(),
-                },
-                ...(isNewContact ? {
-                    contact: {
-                        id:         contact.id,
-                        name:       contact.name,
-                        phone:      contact.phone,
-                        avatarUrl:  contact.avatarUrl,
-                        externalId: contact.externalId,
-                        channelId:  contact.channelId,
-                        convStatus: 'pending',
-                        createdAt:  contact.createdAt.toISOString(),
-                    },
-                } : {}),
-            })
-
-            // Mensagem inbound → atualiza status e updatedAt do contato
-            if (!fromMe && !isNewContact) {
-                const needsStatusUpdate = !contact.convStatus || contact.convStatus === 'resolved'
-                const newStatus = needsStatusUpdate ? 'pending' : contact.convStatus
-                await prisma.contact.update({
-                    where: { id: contact.id },
-                    data: { convStatus: newStatus },
-                })
-                if (needsStatusUpdate) {
-                    publishToOrg(organizationId, {
-                        type: 'conv_updated',
-                        contactId: contact.id,
-                        convStatus: 'pending',
-                        assignedToId: contact.assignedToId,
-                        assignedToName: null,
-                    })
-                }
-            }
-
-            // Auto-atribuição: só para inbound sem agente atribuído
-            if (!fromMe && !contact.assignedToId) {
-                void processAutoAssignment(contact.id, organizationId)
-            }
-
-            log.info(`✅ [Worker] Mensagem processada com sucesso - messageId: ${messageId}, contactId: ${contact.id}, direction: ${direction}`)
+        // ── UAZAPI (fallback para jobs já na fila) ───────────────────────────
+            await processUazapiMessage(job.data as MessageJobData)
         },
         {
             connection: redisConnection,

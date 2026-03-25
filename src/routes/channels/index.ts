@@ -10,6 +10,7 @@ import {
 } from '../../lib/queue.js'
 import { requireAuth } from '../../lib/session.js'
 import { type UazapiConfig, uazapiFetch } from '../../lib/uazapi.js'
+import { processUazapiMessage } from '../../lib/workers/messageWorker.js'
 
 // Gera instanceName: slug do nome + 8 chars hex aleatórios
 // ex: "Suporte WhatsApp" → "suporte-whatsapp-a3f9c12b"
@@ -1122,27 +1123,23 @@ export default async function (app: FastifyInstance) {
           }
         }
 
-        try {
-          await messageQueue.add('process-message', {
-            channelId: channel.id,
-            organizationId: channel.organizationId,
-            channelName: channel.name,
-            chatId,
-            fromMe: msg.fromMe ?? false,
-            messageId: msg.id ?? '',
-            type: msg.type ?? 'text',
-            mediaType: msg.mediaType ?? '',
-            messageType: msg.messageType ?? '',
-            content: msg.content ?? '',
-            text: msg.text ?? '',
-            senderName: msg.senderName ?? '',
-            messageTimestamp: msg.messageTimestamp ?? Date.now(),
-            chatImage: body.chat?.image,
-          })
-          log.info(`✅ Mensagem enfileirada - id: ${msg.id}`)
-        } catch (err) {
-          log.error(`[Webhook] Falha ao enfileirar mensagem ${msg.id}: ${err}`)
-        }
+        // Processa inline (sem BullMQ) — fire-and-forget para não bloquear o webhook
+        processUazapiMessage({
+          channelId: channel.id,
+          organizationId: channel.organizationId,
+          channelName: channel.name,
+          chatId,
+          fromMe: msg.fromMe ?? false,
+          messageId: msg.id ?? '',
+          type: msg.type ?? 'text',
+          mediaType: msg.mediaType ?? '',
+          messageType: msg.messageType ?? '',
+          content: msg.content ?? '',
+          text: msg.text ?? '',
+          senderName: msg.senderName ?? '',
+          messageTimestamp: msg.messageTimestamp ?? Date.now(),
+          chatImage: body.chat?.image,
+        }).catch((err) => log.error(`[Webhook] Erro ao processar mensagem ${msg.id}: ${err}`))
       }
 
       // ── contacts: sync contact name and avatar ───────────────
