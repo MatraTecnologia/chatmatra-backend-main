@@ -1,43 +1,18 @@
 // ─── Message Worker ────────────────────────────────────────────────────────────
-// Processa jobs de mensagens recebidas via webhook da Evolution API.
-// Executa a mesma lógica que antes rodava inline no webhook handler.
+// Processa jobs de mensagens recebidas via webhook do UAZAPI e WhatsApp Business API.
 
 import { Worker } from 'bullmq'
 import { redisConnection, type MessageJobData, type WaBusinessMessageJobData } from '../queue.js'
 import { prisma } from '../prisma.js'
 import { publishToOrg } from '../agentSse.js'
 import { processAutoAssignment } from '../assignmentEngine.js'
+import { log } from '../logger.js'
 
-type WhatsAppConfig = {
-    evolutionUrl: string
-    evolutionApiKey: string
-    instanceName: string
-    phone?: string
-}
-
-/** Busca foto de perfil de um JID na Evolution API e atualiza o contato em background. */
-async function fetchAndSaveAvatar(contactId: string, channelId: string, jid: string): Promise<void> {
+/** Salva avatar do contato a partir do chat.image do webhook UAZAPI. */
+async function saveAvatarIfAvailable(contactId: string, chatImage?: string): Promise<void> {
+    if (!chatImage) return
     try {
-        const channel = await prisma.channel.findUnique({ where: { id: channelId } })
-        if (!channel || channel.type !== 'whatsapp') return
-
-        const cfg = channel.config as WhatsAppConfig
-        if (!cfg?.evolutionUrl || !cfg?.evolutionApiKey || !cfg?.instanceName) return
-
-        const url = `${cfg.evolutionUrl.replace(/\/$/, '')}/chat/fetchProfilePictureUrl/${cfg.instanceName}`
-        const res = await fetch(url, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json', 'apikey': cfg.evolutionApiKey },
-            body: JSON.stringify({ number: jid }),
-        })
-
-        if (!res.ok) return
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const data = await res.json() as any
-        const avatarUrl = data?.profilePictureUrl as string | undefined
-        if (!avatarUrl) return
-
-        await prisma.contact.update({ where: { id: contactId }, data: { avatarUrl } })
+        await prisma.contact.update({ where: { id: contactId }, data: { avatarUrl: chatImage } })
     } catch {
         // silencioso — avatar é opcional
     }
@@ -73,8 +48,7 @@ export function startMessageWorker() {
                     },
                 })
                 isNewContact = true
-                // Busca foto de perfil em background (não bloqueia o processamento)
-                void fetchAndSaveAvatar(contact.id, channelId, from)
+                // Avatar será atualizado quando disponível via webhook
             }
 
             const createdAt = timestamp ? new Date(Number(timestamp) * 1000) : new Date()
@@ -144,76 +118,91 @@ export function startMessageWorker() {
             return
         }
 
-        // ── Evolution API ───────────────────────────────────────────────────────
-            const { channelId, organizationId, key, message, pushName } = job.data as MessageJobData
-            const remoteJid = key.remoteJid ?? ''
-            const fromMe    = key.fromMe ?? false
+        // ── UAZAPI ─────────────────────────────────────────────────────────────
+            const { channelId, organizationId, chatId, fromMe, messageId, type, mediaType, messageType, text, senderName, messageTimestamp, chatImage } = job.data as MessageJobData
+
+            log.info(`[Worker] Processando mensagem - chatId: ${chatId}, fromMe: ${fromMe}, type: ${type}, mediaType: ${mediaType}, messageId: ${messageId}`)
 
             // Só processa mensagens individuais (não grupos)
-            if (!remoteJid.includes('@s.whatsapp.net') && !remoteJid.includes('@c.us')) return
+            if (!chatId.includes('@s.whatsapp.net') && !chatId.includes('@c.us')) {
+                log.warn(`[Worker] Mensagem descartada - chatId sem @s.whatsapp.net/@c.us: ${chatId}`)
+                return
+            }
 
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            const msg = message as any
-
+            // Mapeia tipo da mensagem UAZAPI → tipo interno
             type MsgType = 'text' | 'image' | 'audio' | 'video' | 'document' | 'sticker'
             let msgType: MsgType = 'text'
-            let content = ''
+            let content = text ?? ''
 
-            if (msg?.conversation)                     { content = msg.conversation;                      msgType = 'text' }
-            else if (msg?.extendedTextMessage?.text)   { content = msg.extendedTextMessage.text;           msgType = 'text' }
-            else if (msg?.imageMessage != null)        { content = msg.imageMessage?.caption ?? '';        msgType = 'image' }
-            else if (msg?.videoMessage != null)        { content = msg.videoMessage?.caption ?? '';        msgType = 'video' }
-            else if (msg?.audioMessage != null)        { content = '';                                     msgType = 'audio' }
-            else if (msg?.documentMessage != null)     { content = msg.documentMessage?.fileName ?? '';   msgType = 'document' }
-            else if (msg?.stickerMessage != null)      { content = '';                                     msgType = 'sticker' }
-            else if (msg?.locationMessage != null)     { content = '[Localização]';                        msgType = 'text' }
-            else if (msg?.contactMessage != null)      { content = '[Contato]';                            msgType = 'text' }
-            else if (msg?.reactionMessage != null)     { content = `[Reação: ${msg.reactionMessage?.text ?? ''}]`; msgType = 'text' }
+            if (type === 'text') {
+                msgType = 'text'
+            } else if (mediaType === 'image')        { msgType = 'image' }
+            else if (mediaType === 'video')          { msgType = 'video' }
+            else if (mediaType === 'ptt')            { msgType = 'audio'; content = '' }
+            else if (mediaType === 'document')       { msgType = 'document' }
+            else if (mediaType === 'vcard')          { msgType = 'text' }
+            else if (messageType === 'StickerMessage') { msgType = 'sticker'; content = '' }
+            else if (messageType === 'LocationMessage') { content = '[Localização]' }
+            else if (messageType === 'ContactMessage') { content = content || '[Contato]' }
+            else if (messageType === 'ReactionMessage') { content = `[Reação: ${text ?? ''}]` }
 
             const isMedia = ['image', 'audio', 'video', 'document', 'sticker'].includes(msgType)
-            if (!content && !isMedia) return
+            if (!content && !isMedia) {
+                log.warn(`[Worker] Mensagem descartada - sem conteúdo e não é mídia. type: ${type}, mediaType: ${mediaType}, messageType: ${messageType}, text: "${text}"`)
+                return
+            }
 
             const direction = fromMe ? 'outbound' : 'inbound'
 
-            // Busca ou cria o contato pelo JID — inclui channelId para isolar conversas por instância
+            // Busca ou cria o contato pelo chatId — inclui channelId para isolar conversas por instância
+            // Usa try-catch no create para lidar com race condition quando 2+ mensagens
+            // do mesmo contato chegam simultaneamente (concurrency do worker)
             let contact = await prisma.contact.findFirst({
-                where: { organizationId, externalId: remoteJid, channelId },
+                where: { organizationId, externalId: chatId, channelId },
             })
 
             let isNewContact = false
             if (!contact) {
-                const rawNumber = remoteJid.split('@')[0]
+                const rawNumber = chatId.split('@')[0]
                 const contactName = fromMe
                     ? (rawNumber || 'Contato')
-                    : (pushName || rawNumber || 'Desconhecido')
+                    : (senderName || rawNumber || 'Desconhecido')
 
-                contact = await prisma.contact.create({
-                    data: {
-                        organizationId,
-                        channelId,
-                        externalId: remoteJid,
-                        phone: rawNumber ? `+${rawNumber}` : undefined,
-                        name: contactName,
-                        convStatus: 'pending',
-                    },
-                })
-                isNewContact = true
-                // Busca foto de perfil em background (não bloqueia o processamento)
-                void fetchAndSaveAvatar(contact.id, channelId, remoteJid)
-            } else if (!fromMe && pushName && pushName !== contact.name) {
-                // Atualiza nome se o pushName mudou (dentro da mesma instância)
-                await prisma.contact.update({ where: { id: contact.id }, data: { name: pushName } })
-                contact = { ...contact, name: pushName }
+                try {
+                    contact = await prisma.contact.create({
+                        data: {
+                            organizationId,
+                            channelId,
+                            externalId: chatId,
+                            phone: rawNumber ? `+${rawNumber}` : undefined,
+                            name: contactName,
+                            convStatus: 'pending',
+                        },
+                    })
+                    isNewContact = true
+                    void saveAvatarIfAvailable(contact.id, chatImage)
+                } catch {
+                    // Race condition: outro job já criou o contato — busca novamente
+                    contact = await prisma.contact.findFirst({
+                        where: { organizationId, externalId: chatId, channelId },
+                    })
+                    if (!contact) throw new Error(`Contato não encontrado após race condition: ${chatId}`)
+                }
+            } else if (!fromMe && senderName && senderName !== contact.name) {
+                // Atualiza nome se mudou
+                await prisma.contact.update({ where: { id: contact.id }, data: { name: senderName } })
+                contact = { ...contact, name: senderName }
             }
 
             // Evita duplicata se a mensagem já foi salva (webhook retried)
-            if (key.id) {
+            if (messageId) {
                 const existing = await prisma.message.findFirst({
-                    where: { organizationId, externalId: key.id },
+                    where: { organizationId, externalId: messageId },
                 })
                 if (existing) return
             }
 
+            const createdAt = messageTimestamp ? new Date(messageTimestamp) : new Date()
             const savedMsg = await prisma.message.create({
                 data: {
                     organizationId,
@@ -223,7 +212,8 @@ export function startMessageWorker() {
                     type:       msgType,
                     content,
                     status:     'sent',
-                    externalId: key.id,
+                    externalId: messageId,
+                    createdAt,
                 },
             })
 
@@ -281,15 +271,28 @@ export function startMessageWorker() {
             if (!fromMe && !contact.assignedToId) {
                 void processAutoAssignment(contact.id, organizationId)
             }
+
+            log.info(`✅ [Worker] Mensagem processada com sucesso - messageId: ${messageId}, contactId: ${contact.id}, direction: ${direction}`)
         },
         {
             connection: redisConnection,
             concurrency: 10,
+            lockDuration: 30000,       // 30s lock antes de considerar stalled
+            stalledInterval: 15000,    // verifica stalled jobs a cada 15s
+            maxStalledCount: 2,        // permite 2 stalls antes de falhar o job
         }
     )
 
     worker.on('failed', (job, err) => {
-        console.error(`[MessageWorker] Job ${job?.id} falhou:`, err.message)
+        log.error(`[MessageWorker] Job ${job?.id} (${job?.name}) falhou: ${err.message}`)
+    })
+
+    worker.on('stalled', (jobId) => {
+        log.warn(`[MessageWorker] Job ${jobId} ficou stalled — será reprocessado`)
+    })
+
+    worker.on('error', (err) => {
+        log.error(`[MessageWorker] Erro no worker: ${err.message}`)
     })
 
     console.log('⚙️  MessageWorker iniciado (concurrency=10)')

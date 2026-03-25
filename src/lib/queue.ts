@@ -19,15 +19,23 @@ redisConnection.on('error', (err) => console.error('❌ Erro Redis:', err.messag
 
 // ─── Tipos dos jobs ────────────────────────────────────────────────────────────
 
-/** Job de processamento de mensagem recebida via webhook Evolution API */
+/** Job de processamento de mensagem recebida via webhook UAZAPI */
 export type MessageJobData = {
     channelId: string
     organizationId: string
     channelName: string
-    key: { remoteJid?: string; fromMe?: boolean; id?: string }
+    chatId: string            // "554398414904@s.whatsapp.net"
+    fromMe: boolean
+    messageId: string         // "554391834229:3B353D3AAB6C140AB3FD"
+    type: string              // "text" | "media"
+    mediaType: string         // "" | "image" | "video" | "document" | "ptt" | "vcard"
+    messageType: string       // "Conversation" | "ImageMessage" | etc.
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    message: any
-    pushName?: string
+    content: any              // string for text, object for media
+    text: string              // text content or caption
+    senderName: string
+    messageTimestamp: number   // milissegundos
+    chatImage?: string         // avatar URL do chat object
 }
 
 /** Job de processamento de mensagem recebida via WhatsApp Business API (Meta) */
@@ -67,7 +75,7 @@ const queueOptions = {
     },
 }
 
-/** Fila para processamento de mensagens do webhook (Evolution API + WA Business) */
+/** Fila para processamento de mensagens do webhook (UAZAPI + WA Business) */
 export const messageQueue = new Queue<MessageJobData | WaBusinessMessageJobData>('webhook-messages', queueOptions)
 
 /** Fila para sincronizações de histórico */

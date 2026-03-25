@@ -5,31 +5,7 @@ import { publishToOrg } from '../../lib/agentSse.js'
 import { processAutoAssignment } from '../../lib/assignmentEngine.js'
 import { syncQueue } from '../../lib/queue.js'
 
-// ─── Helper Evolution API ─────────────────────────────────────────────────────
-
-type WaConfig = { evolutionUrl: string; evolutionApiKey: string; instanceName: string }
-
-async function evolutionFetch(
-    cfg: Pick<WaConfig, 'evolutionUrl' | 'evolutionApiKey'>,
-    path: string,
-    options: RequestInit = {}
-) {
-    const url = `${cfg.evolutionUrl.replace(/\/$/, '')}${path}`
-    const res = await fetch(url, {
-        ...options,
-        headers: {
-            'Content-Type': 'application/json',
-            'apikey': cfg.evolutionApiKey,
-            ...options.headers,
-        },
-    })
-    const text = await res.text()
-    try {
-        return { ok: res.ok, status: res.status, data: JSON.parse(text) }
-    } catch {
-        return { ok: res.ok, status: res.status, data: text }
-    }
-}
+import { type UazapiConfig, uazapiFetch } from '../../lib/uazapi.js'
 
 export default async function (app: FastifyInstance) {
 
@@ -294,51 +270,49 @@ export default async function (app: FastifyInstance) {
         })
         if (!isMember) return reply.status(403).send({ error: 'Sem permissão.' })
 
-        const cfg = channel.config as WaConfig
+        const cfg = channel.config as UazapiConfig
+        if (!cfg.uazapiInstanceToken) {
+            return reply.status(400).send({ error: 'Canal sem token de instância UAZAPI.' })
+        }
 
-        // Busca contatos na Evolution API
-        const result = await evolutionFetch(
-            cfg,
-            `/chat/findContacts/${cfg.instanceName}`,
-            { method: 'POST', body: JSON.stringify({ where: {} }) }
-        )
+        // Busca chats no UAZAPI (não há endpoint de contatos separado)
+        const result = await uazapiFetch(cfg.uazapiUrl, '/chat/find', { instanceToken: cfg.uazapiInstanceToken }, {
+            method: 'POST',
+            body: JSON.stringify({ wa_isGroup: false }),
+        })
 
         if (!result.ok) {
             return reply.status(502).send({
-                error: 'Não foi possível obter contatos da Evolution API.',
+                error: 'Não foi possível obter contatos do UAZAPI.',
                 detail: result.data,
             })
         }
 
-        type WaContact = {
-            id?: string
-            remoteJid?: string
-            pushName?: string
+        type UazapiChat = {
+            wa_chatid?: string
+            phone?: string
             name?: string
-            number?: string
-            profilePictureUrl?: string
-            isGroup?: boolean
+            wa_name?: string
+            wa_contactName?: string
+            image?: string
+            wa_isGroup?: boolean
         }
 
-        // A Evolution API pode retornar array direto ou { contacts: [...] }
         const rawList: unknown = Array.isArray(result.data)
             ? result.data
-            : (result.data as Record<string, unknown>)?.contacts ?? []
+            : Array.isArray(result.data?.chats) ? result.data.chats : []
 
         if (!Array.isArray(rawList)) {
             return reply.status(502).send({
-                error: 'Formato de resposta inesperado da Evolution API.',
+                error: 'Formato de resposta inesperado do UAZAPI.',
                 detail: result.data,
             })
         }
 
-        // Filtra apenas contatos individuais com número de telefone real
-        // - Aceita apenas @s.whatsapp.net e @c.us (têm número direto)
-        // - Descarta @g.us (grupos) e @lid (IDs internos criptografados)
-        const waContacts = (rawList as WaContact[]).filter((c) => {
-            const jid = c.remoteJid
-            if (!jid) return false
-            if (c.isGroup) return false
+        // Filtra apenas chats individuais
+        const waChats = (rawList as UazapiChat[]).filter((c) => {
+            const jid = c.wa_chatid ?? ''
+            if (c.wa_isGroup) return false
             if (!jid.includes('@s.whatsapp.net') && !jid.includes('@c.us')) return false
             return true
         })
@@ -346,21 +320,13 @@ export default async function (app: FastifyInstance) {
         let synced = 0
         let updated = 0
 
-        for (const c of waContacts) {
-            const jid = c.remoteJid!
+        for (const c of waChats) {
+            const jid = c.wa_chatid!
             const externalId = jid
-
-            // Extrai número apenas de JIDs com sufixo @s.whatsapp.net ou @c.us
-            // JIDs @lid são IDs internos do WhatsApp e não correspondem ao número direto
-            let phone: string | undefined
-            if (jid.includes('@s.whatsapp.net') || jid.includes('@c.us')) {
-                const rawNumber = c.number || jid.split('@')[0] || ''
-                if (rawNumber) phone = `+${rawNumber}`
-            }
-
-            const contactName = c.name || c.pushName || phone || 'Desconhecido'
-            // Evolution API v2 usa profilePicUrl (não profilePictureUrl)
-            const avatarUrl = (c as Record<string, unknown>).profilePicUrl as string | undefined
+            const rawNumber = c.phone || jid.split('@')[0] || ''
+            const phone = rawNumber ? `+${rawNumber}` : undefined
+            const contactName = c.wa_name || c.wa_contactName || c.name || phone || 'Desconhecido'
+            const avatarUrl = c.image || undefined
 
             const existing = await prisma.contact.findFirst({
                 where: { organizationId: channel.organizationId, externalId },
@@ -392,8 +358,8 @@ export default async function (app: FastifyInstance) {
             updated,
             total: synced + updated,
             _debug: {
-                rawTotal: rawList.length,
-                filteredTotal: waContacts.length,
+                rawTotal: (rawList as unknown[]).length,
+                filteredTotal: waChats.length,
             },
         }
     })

@@ -1,96 +1,105 @@
 import { betterAuth } from 'better-auth'
 import { prismaAdapter } from 'better-auth/adapters/prisma'
-import { organization, magicLink, emailOTP } from 'better-auth/plugins'
-import { prisma } from './prisma.js'
+import { emailOTP, magicLink, organization } from 'better-auth/plugins'
 import { sendEmail } from './mail.js'
+import { prisma } from './prisma.js'
 
 // Busca template customizado da organização do usuário.
 // Substitui {{name}}, {{url}}, {{otp}}, {{logo}}, {{orgName}}, {{domain}} pelo valor real.
 async function resolveTemplate(
-    userId: string | null,
-    type: string,
-    vars: Record<string, string>,
-    defaultSubject: string,
-    defaultHtml: string,
+  userId: string | null,
+  type: string,
+  vars: Record<string, string>,
+  defaultSubject: string,
+  defaultHtml: string,
 ): Promise<{ subject: string; html: string }> {
-    let html = defaultHtml
-    let subject = defaultSubject
-    let organization: { name: string; logo: string | null; domain: string | null } | null = null
+  let html = defaultHtml
+  let subject = defaultSubject
+  let organization: {
+    name: string
+    logo: string | null
+    domain: string | null
+  } | null = null
 
-    // Tenta buscar template customizado e dados da organização
-    if (userId) {
-        const member = await prisma.member.findFirst({
-            where: { userId },
-            orderBy: { createdAt: 'asc' },
-            include: { organization: { select: { name: true, logo: true, domain: true } } }
-        })
-        if (member) {
-            organization = member.organization
+  // Tenta buscar template customizado e dados da organização
+  if (userId) {
+    const member = await prisma.member.findFirst({
+      where: { userId },
+      orderBy: { createdAt: 'asc' },
+      include: {
+        organization: { select: { name: true, logo: true, domain: true } },
+      },
+    })
+    if (member) {
+      organization = member.organization
 
-            const tpl = await prisma.emailTemplate.findUnique({
-                where: { organizationId_type: { organizationId: member.organizationId, type } },
-            })
-            if (tpl) {
-                html = tpl.html
-                subject = tpl.subject
-            }
-        }
+      const tpl = await prisma.emailTemplate.findUnique({
+        where: {
+          organizationId_type: { organizationId: member.organizationId, type },
+        },
+      })
+      if (tpl) {
+        html = tpl.html
+        subject = tpl.subject
+      }
     }
+  }
 
-    // Adiciona variáveis da organização
-    // Se a logo for base64, adiciona o prefixo data:image correto
-    let logoSrc = ''
-    if (organization?.logo) {
-        // Verifica se já tem o prefixo data:image
-        if (organization.logo.startsWith('data:image')) {
-            logoSrc = organization.logo
-        }
-        // Se começar com http/https, é uma URL
-        else if (organization.logo.startsWith('http')) {
-            logoSrc = organization.logo
-        }
-        // Caso contrário, assume que é base64 puro e adiciona o prefixo
-        else {
-            logoSrc = `data:image/png;base64,${organization.logo}`
-        }
+  // Adiciona variáveis da organização
+  // Se a logo for base64, adiciona o prefixo data:image correto
+  let logoSrc = ''
+  if (organization?.logo) {
+    // Verifica se já tem o prefixo data:image
+    if (organization.logo.startsWith('data:image')) {
+      logoSrc = organization.logo
     }
-
-    const allVars = {
-        ...vars,
-        '{{orgName}}': organization?.name ?? 'Matra Chat',
-        '{{domain}}': organization?.domain ?? process.env.FRONTEND_URL ?? 'matrachat.com',
-        '{{logo}}': logoSrc,
-        '{{logoDisplay}}': organization?.logo ? '' : 'display:none;',
+    // Se começar com http/https, é uma URL
+    else if (organization.logo.startsWith('http')) {
+      logoSrc = organization.logo
     }
-
-    // SEMPRE substitui as variáveis, mesmo nos templates padrão
-    for (const [key, value] of Object.entries(allVars)) {
-        html    = html.replaceAll(key, value)
-        subject = subject.replaceAll(key, value)
+    // Caso contrário, assume que é base64 puro e adiciona o prefixo
+    else {
+      logoSrc = `data:image/png;base64,${organization.logo}`
     }
+  }
 
-    return { subject, html }
+  const allVars = {
+    ...vars,
+    '{{orgName}}': organization?.name ?? 'Matra Chat',
+    '{{domain}}':
+      organization?.domain ?? process.env.FRONTEND_URL ?? 'matrachat.com',
+    '{{logo}}': logoSrc,
+    '{{logoDisplay}}': organization?.logo ? '' : 'display:none;',
+  }
+
+  // SEMPRE substitui as variáveis, mesmo nos templates padrão
+  for (const [key, value] of Object.entries(allVars)) {
+    html = html.replaceAll(key, value)
+    subject = subject.replaceAll(key, value)
+  }
+
+  return { subject, html }
 }
 
 export const auth = betterAuth({
-    basePath: '/auth',
-    baseURL: process.env.BETTER_AUTH_URL ?? 'http://localhost:3333',
-    database: prismaAdapter(prisma, {
-        provider: 'postgresql',
-    }),
-    advanced: {
-        // Seta o cookie no domínio pai (ex: .matratecnologia.com) para que
-        // tanto o frontend quanto o backend possam ler a sessão
-        crossSubDomainCookies: {
-            enabled: !!process.env.COOKIE_DOMAIN,
-            domain: process.env.COOKIE_DOMAIN,
-        },
+  basePath: '/auth',
+  baseURL: process.env.BETTER_AUTH_URL ?? '*',
+  database: prismaAdapter(prisma, {
+    provider: 'postgresql',
+  }),
+  advanced: {
+    // Seta o cookie no domínio pai (ex: .matratecnologia.com) para que
+    // tanto o frontend quanto o backend possam ler a sessão
+    crossSubDomainCookies: {
+      enabled: !!process.env.COOKIE_DOMAIN,
+      domain: process.env.COOKIE_DOMAIN,
     },
-    emailAndPassword: {
-        enabled: true,
-        requireEmailVerification: true,
-        sendResetPassword: async ({ user, url }) => {
-            const defaultHtml = `<!DOCTYPE html>
+  },
+  emailAndPassword: {
+    enabled: true,
+    requireEmailVerification: true,
+    sendResetPassword: async ({ user, url }) => {
+      const defaultHtml = `<!DOCTYPE html>
 <html lang="pt-BR">
 <head>
     <meta charset="UTF-8">
@@ -123,15 +132,21 @@ export const auth = betterAuth({
     </div>
 </body>
 </html>`
-            const { subject, html } = await resolveTemplate(user.id, 'reset-password', { '{{name}}': user.name, '{{url}}': url }, 'Redefinição de senha - {{orgName}}', defaultHtml)
-            await sendEmail({ to: user.email, subject, html })
-        },
+      const { subject, html } = await resolveTemplate(
+        user.id,
+        'reset-password',
+        { '{{name}}': user.name, '{{url}}': url },
+        'Redefinição de senha - {{orgName}}',
+        defaultHtml,
+      )
+      await sendEmail({ to: user.email, subject, html })
     },
-    emailVerification: {
-        sendOnSignUp: true,
-        autoSignInAfterVerification: true,
-        sendVerificationEmail: async ({ user, url }) => {
-            const defaultHtml = `<!DOCTYPE html>
+  },
+  emailVerification: {
+    sendOnSignUp: true,
+    autoSignInAfterVerification: true,
+    sendVerificationEmail: async ({ user, url }) => {
+      const defaultHtml = `<!DOCTYPE html>
 <html lang="pt-BR">
 <head>
     <meta charset="UTF-8">
@@ -164,40 +179,48 @@ export const auth = betterAuth({
     </div>
 </body>
 </html>`
-            const { subject, html } = await resolveTemplate(user.id, 'verification', { '{{name}}': user.name, '{{url}}': url }, 'Verifique seu e-mail - {{orgName}}', defaultHtml)
-            await sendEmail({ to: user.email, subject, html })
-        },
+      const { subject, html } = await resolveTemplate(
+        user.id,
+        'verification',
+        { '{{name}}': user.name, '{{url}}': url },
+        'Verifique seu e-mail - {{orgName}}',
+        defaultHtml,
+      )
+      await sendEmail({ to: user.email, subject, html })
     },
-    // Em multi-tenant, cada subdomínio (a.matratecnologia.com, b.matratecnologia.com)
-    // faz chamadas à API. A função recebe o Request e retorna a lista de origens
-    // confiáveis — se a origem da request bater com BASE_DOMAIN, é adicionada
-    // dinamicamente sem precisar listar cada tenant.
-    trustedOrigins: async (request) => {
-        const defaults = [
-            process.env.BETTER_AUTH_URL ?? 'http://localhost:3333',
-            process.env.FRONTEND_URL    ?? 'http://localhost:3000',
-        ]
-        const baseDomain = process.env.BASE_DOMAIN
-        const origin     = request?.headers?.get('origin')
-        if (origin && baseDomain) {
-            try {
-                const { hostname } = new URL(origin)
-                if (hostname === baseDomain || hostname.endsWith(`.${baseDomain}`)) {
-                    return [...defaults, origin]
-                }
-            } catch { /* origin inválida */ }
+  },
+  // Em multi-tenant, cada subdomínio (a.matratecnologia.com, b.matratecnologia.com)
+  // faz chamadas à API. A função recebe o Request e retorna a lista de origens
+  // confiáveis — se a origem da request bater com BASE_DOMAIN, é adicionada
+  // dinamicamente sem precisar listar cada tenant.
+  trustedOrigins: async request => {
+    const defaults = [
+      process.env.BETTER_AUTH_URL ?? 'http://localhost:3333',
+      process.env.FRONTEND_URL ?? 'http://localhost:3000',
+    ]
+    const baseDomain = process.env.BASE_DOMAIN
+    const origin = request?.headers?.get('origin')
+    if (origin && baseDomain) {
+      try {
+        const { hostname } = new URL(origin)
+        if (hostname === baseDomain || hostname.endsWith(`.${baseDomain}`)) {
+          return [...defaults, origin]
         }
-        return defaults
-    },
-    plugins: [
-        organization({
-            allowUserToCreateOrganization: true,
-        }),
-        magicLink({
-            sendMagicLink: async ({ email, url }) => {
-                // Magic link não tem userId direto — busca pelo email
-                const user = await prisma.user.findUnique({ where: { email } })
-                const defaultHtml = `<!DOCTYPE html>
+      } catch {
+        /* origin inválida */
+      }
+    }
+    return defaults
+  },
+  plugins: [
+    organization({
+      allowUserToCreateOrganization: true,
+    }),
+    magicLink({
+      sendMagicLink: async ({ email, url }) => {
+        // Magic link não tem userId direto — busca pelo email
+        const user = await prisma.user.findUnique({ where: { email } })
+        const defaultHtml = `<!DOCTYPE html>
 <html lang="pt-BR">
 <head>
     <meta charset="UTF-8">
@@ -229,24 +252,30 @@ export const auth = betterAuth({
     </div>
 </body>
 </html>`
-                const { subject, html } = await resolveTemplate(user?.id ?? null, 'magic-link', { '{{url}}': url }, 'Seu link de acesso - {{orgName}}', defaultHtml)
-                await sendEmail({ to: email, subject, html })
-            },
-        }),
-        emailOTP({
-            async sendVerificationOTP({ email, otp, type }) {
-                const user = await prisma.user.findUnique({ where: { email } })
-                const templateTypeMap: Record<string, string> = {
-                    'sign-in':            'otp-sign-in',
-                    'email-verification': 'otp-verification',
-                    'forget-password':    'otp-forget-password',
-                }
-                const defaultSubjects: Record<string, string> = {
-                    'sign-in':            'Seu código de acesso - {{orgName}}',
-                    'email-verification': 'Verifique seu e-mail - {{orgName}}',
-                    'forget-password':    'Redefinição de senha - {{orgName}}',
-                }
-                const defaultHtml = `<!DOCTYPE html>
+        const { subject, html } = await resolveTemplate(
+          user?.id ?? null,
+          'magic-link',
+          { '{{url}}': url },
+          'Seu link de acesso - {{orgName}}',
+          defaultHtml,
+        )
+        await sendEmail({ to: email, subject, html })
+      },
+    }),
+    emailOTP({
+      async sendVerificationOTP({ email, otp, type }) {
+        const user = await prisma.user.findUnique({ where: { email } })
+        const templateTypeMap: Record<string, string> = {
+          'sign-in': 'otp-sign-in',
+          'email-verification': 'otp-verification',
+          'forget-password': 'otp-forget-password',
+        }
+        const defaultSubjects: Record<string, string> = {
+          'sign-in': 'Seu código de acesso - {{orgName}}',
+          'email-verification': 'Verifique seu e-mail - {{orgName}}',
+          'forget-password': 'Redefinição de senha - {{orgName}}',
+        }
+        const defaultHtml = `<!DOCTYPE html>
 <html lang="pt-BR">
 <head>
     <meta charset="UTF-8">
@@ -280,13 +309,19 @@ export const auth = betterAuth({
     </div>
 </body>
 </html>`
-                const { subject, html } = await resolveTemplate(user?.id ?? null, templateTypeMap[type] ?? 'otp-sign-in', { '{{otp}}': otp }, defaultSubjects[type] ?? 'Seu código - {{orgName}}', defaultHtml)
-                await sendEmail({
-                    to: email,
-                    subject,
-                    html,
-                })
-            },
-        }),
-    ],
+        const { subject, html } = await resolveTemplate(
+          user?.id ?? null,
+          templateTypeMap[type] ?? 'otp-sign-in',
+          { '{{otp}}': otp },
+          defaultSubjects[type] ?? 'Seu código - {{orgName}}',
+          defaultHtml,
+        )
+        await sendEmail({
+          to: email,
+          subject,
+          html,
+        })
+      },
+    }),
+  ],
 })

@@ -2,6 +2,7 @@ import type { FastifyInstance } from 'fastify'
 import { requireAuth } from '../../lib/session.js'
 import { prisma } from '../../lib/prisma.js'
 import { log } from '../../lib/logger.js'
+import { type UazapiConfig, uazapiFetch } from '../../lib/uazapi.js'
 
 async function syncWaLabel(contactId: string, tagId: string, action: 'add' | 'remove') {
     const [contact, tag] = await Promise.all([
@@ -23,43 +24,42 @@ async function syncWaLabel(contactId: string, tagId: string, action: 'add' | 're
     const channel = await prisma.channel.findUnique({ where: { id: contact.channelId } })
     if (!channel || channel.type !== 'whatsapp' || channel.status !== 'connected') return
 
-    const cfg = channel.config as { evolutionUrl?: string; evolutionApiKey?: string; instanceName?: string }
-    if (!cfg.evolutionUrl || !cfg.instanceName) return
+    const cfg = channel.config as UazapiConfig
+    if (!cfg.uazapiUrl || !cfg.uazapiInstanceToken) return
 
-    const baseUrl = cfg.evolutionUrl.replace(/\/$/, '')
-    const headers: Record<string, string> = { 'Content-Type': 'application/json' }
-    if (cfg.evolutionApiKey) headers['apikey'] = cfg.evolutionApiKey
+    const cleanNumber = contact.externalId.includes('@') ? contact.externalId.split('@')[0] : contact.externalId
 
-    const labelsRes = await fetch(`${baseUrl}/label/findLabels/${cfg.instanceName}`, { headers }).catch((err) => {
+    // UAZAPI: POST /chat/labels com add_labelid ou remove_labelid
+    // Primeiro busca labels para encontrar o ID correspondente ao nome da tag
+    const labelsRes = await uazapiFetch(cfg.uazapiUrl, '/labels', { instanceToken: cfg.uazapiInstanceToken }).catch((err) => {
         log.error('syncWaLabel: falha ao buscar labels', err)
         return null
     })
     if (!labelsRes?.ok) {
-        log.error(`syncWaLabel: findLabels retornou status ${labelsRes?.status}`)
+        log.error(`syncWaLabel: /labels retornou status ${labelsRes?.status}`)
         return
     }
 
     type WaLabel = { id?: string; name?: string; color?: number }
-    const labels: WaLabel[] = await labelsRes.json().catch(() => [])
+    const labels: WaLabel[] = Array.isArray(labelsRes.data) ? labelsRes.data : []
     const match = labels.find((l) => (l.name ?? '').toLowerCase() === (tag.name ?? '').toLowerCase())
     if (!match?.id) return
 
     const labelId = match.id
-    const cleanNumber = contact.externalId.includes('@') ? contact.externalId.split('@')[0] : contact.externalId
-    const payload = { number: cleanNumber, labelId: labelId, action: action }
+    const payload = action === 'add'
+        ? { number: cleanNumber, add_labelid: labelId }
+        : { number: cleanNumber, remove_labelid: labelId }
 
-    const res = await fetch(`${baseUrl}/label/handleLabel/${cfg.instanceName}`, {
+    const res = await uazapiFetch(cfg.uazapiUrl, '/chat/labels', { instanceToken: cfg.uazapiInstanceToken }, {
         method: 'POST',
-        headers,
         body: JSON.stringify(payload),
     }).catch((err) => {
-        log.error('syncWaLabel: erro de rede em handleLabel', err)
+        log.error('syncWaLabel: erro de rede em /chat/labels', err)
         return null
     })
 
     if (res && !res.ok) {
-        const text = await res.text().catch(() => '')
-        log.error(`syncWaLabel: handleLabel retornou ${res.status} — body: ${text}`)
+        log.error(`syncWaLabel: /chat/labels retornou ${res.status} — body: ${JSON.stringify(res.data)}`)
     }
 }
 

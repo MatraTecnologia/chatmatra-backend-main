@@ -58,14 +58,14 @@ Prisma client singleton is in `src/lib/prisma.ts`.
 
 ### Background Jobs
 BullMQ with Redis. Two queues defined in `src/lib/queue.ts`:
-- `webhook-messages` — processes incoming messages from Evolution API and WhatsApp Business API webhooks; handles contact creation and triggers auto-assignment
+- `webhook-messages` — processes incoming messages from UAZAPI and WhatsApp Business API webhooks; handles contact creation and triggers auto-assignment
 - `sync-history` — syncs message history from WhatsApp channels
 
 Workers start alongside the server in `src/server.ts`.
 
 ### WhatsApp Integration
 Dual support via `channels/` routes:
-- **Evolution API**: Self-hosted wrapper, uses `evolutionFetch()` helper
+- **UAZAPI**: Self-hosted wrapper (`{subdomain}.uazapi.com`), uses `uazapiFetch()` helper from `src/lib/uazapi.ts`
 - **WhatsApp Business API**: Meta Graph API, uses `whatsappBusinessFetch()` helper
 
 Channel credentials/config are stored as JSON in `Channel.config`.
