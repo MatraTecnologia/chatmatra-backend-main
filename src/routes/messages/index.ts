@@ -68,12 +68,17 @@ export default async function (app: FastifyInstance) {
                     status: true,
                     channelId: true,
                     externalId: true,
+                    quotedExternalId: true,
+                    quotedText: true,
                     createdAt: true,
                     user: { select: { id: true, name: true, image: true } },
                 },
             })
             // Inverte para exibição cronológica (mais antigas no topo)
-            const messages = rows.reverse()
+            const messages = rows.reverse().map(m => ({
+                ...m,
+                quotedMessage: m.quotedText ? { text: m.quotedText } : null,
+            }))
             return { hasMore: rows.length === limit, messages }
         }
 
@@ -93,13 +98,19 @@ export default async function (app: FastifyInstance) {
                     status: true,
                     channelId: true,
                     externalId: true,
+                    quotedExternalId: true,
+                    quotedText: true,
                     createdAt: true,
                     user: { select: { id: true, name: true, image: true } },
                 },
             }),
         ])
 
-        return { total, page, limit, messages }
+        const messages2 = messages.map(m => ({
+            ...m,
+            quotedMessage: (m as any).quotedText ? { text: (m as any).quotedText } : null,
+        }))
+        return { total, page, limit, messages: messages2 }
     })
 
     // POST /messages — salva uma mensagem enviada/nota
@@ -118,7 +129,9 @@ export default async function (app: FastifyInstance) {
                     type:       { type: 'string', enum: ['text', 'note', 'image', 'audio', 'video', 'document', 'sticker'] },
                     content:    { type: 'string', minLength: 1 },
                     status:     { type: 'string' },
-                    externalId: { type: 'string' },
+                    externalId:       { type: 'string' },
+                    quotedExternalId: { type: 'string' },
+                    quotedText:       { type: 'string' },
                 },
             },
         },
@@ -136,6 +149,8 @@ export default async function (app: FastifyInstance) {
             content: string
             status?: string
             externalId?: string
+            quotedExternalId?: string
+            quotedText?: string
         }
         const userId = request.session.user.id
 
@@ -154,10 +169,12 @@ export default async function (app: FastifyInstance) {
                 direction:      body.direction,
                 type:           body.type,
                 content:        body.content,
-                status:         body.status ?? 'sent',
-                externalId:     body.externalId,
+                status:          body.status ?? 'sent',
+                externalId:      body.externalId,
+                quotedExternalId: body.quotedExternalId ?? null,
+                quotedText:       body.quotedText ?? null,
                 // Registra o agente que enviou (apenas para mensagens outbound do painel)
-                userId:         body.direction === 'outbound' ? userId : undefined,
+                userId:          body.direction === 'outbound' ? userId : undefined,
             },
         })
 
@@ -181,14 +198,16 @@ export default async function (app: FastifyInstance) {
                 contactName:      contact?.name ?? null,
                 contactAvatarUrl: contact?.avatarUrl ?? null,
                 message: {
-                    id:        message.id,
-                    direction: body.direction,
-                    type:      body.type,
-                    content:   body.content,
-                    status:    message.status,
-                    channelId: body.channelId ?? null,
-                    createdAt: message.createdAt.toISOString(),
-                    user:      sender ?? null,
+                    id:         message.id,
+                    direction:  body.direction,
+                    type:       body.type,
+                    content:    body.content,
+                    status:     message.status,
+                    channelId:  body.channelId ?? null,
+                    createdAt:  message.createdAt.toISOString(),
+                    externalId: body.externalId ?? null,
+                    user:       sender ?? null,
+                    ...(body.quotedText ? { quotedMessage: { text: body.quotedText } } : {}),
                 },
             })
         }

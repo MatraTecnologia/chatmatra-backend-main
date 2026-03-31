@@ -36,6 +36,8 @@ export type MessageJobData = {
     senderName: string
     messageTimestamp: number   // milissegundos
     chatImage?: string         // avatar URL do chat object
+    quoted?: string            // msg.quoted — ID curto da mensagem citada
+    quotedText?: string        // extraído de msg.content.contextInfo.quotedMessage.conversation
 }
 
 /** Job de processamento de mensagem recebida via WhatsApp Business API (Meta) */

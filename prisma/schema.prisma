@@ -177,8 +177,10 @@ model Message {
   type           String   @default("text")     // 'text' | 'note' | 'image' | 'audio' | 'video' | 'document' | 'sticker'
   content        String
   status         String   @default("sent")     // 'sent' | 'error' | 'delivered' | 'read'
-  externalId     String?  // ID da mensagem na Evolution API
-  userId         String?  // Agente que enviou (null = inbound ou enviado pelo WhatsApp diretamente)
+  externalId       String?  // ID da mensagem na Evolution API
+  quotedExternalId String?  // ID curto do WhatsApp da mensagem citada (msg.quoted)
+  quotedText       String?  // Texto da mensagem citada (extraído de content.contextInfo)
+  userId           String?  // Agente que enviou (null = inbound ou enviado pelo WhatsApp diretamente)
   createdAt      DateTime @default(now())
 
   organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)

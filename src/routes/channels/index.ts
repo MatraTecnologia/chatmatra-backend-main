@@ -753,6 +753,7 @@ export default async function (app: FastifyInstance) {
           properties: {
             number: { type: 'string' }, // número ou JID completo
             text: { type: 'string', minLength: 1 },
+            replyid: { type: 'string' }, // ID curto do WhatsApp da mensagem a responder
             mediaMessage: {
               type: 'object',
               properties: {
@@ -773,9 +774,10 @@ export default async function (app: FastifyInstance) {
     },
     async (request, reply) => {
       const { id } = request.params as { id: string }
-      const { number, text, mediaMessage } = request.body as {
+      const { number, text, mediaMessage, replyid } = request.body as {
         number: string
         text?: string
+        replyid?: string
         mediaMessage?: {
           mediatype: string
           fileName?: string
@@ -822,6 +824,7 @@ export default async function (app: FastifyInstance) {
               file: mediaMessage.media,
               text: mediaMessage.caption,
               docName: mediaMessage.fileName,
+              ...(replyid ? { replyid } : {}),
             }),
           },
         )
@@ -833,7 +836,7 @@ export default async function (app: FastifyInstance) {
           { instanceToken: cfg.uazapiInstanceToken },
           {
             method: 'POST',
-            body: JSON.stringify({ number: cleanNumber, text }),
+            body: JSON.stringify({ number: cleanNumber, text, ...(replyid ? { replyid } : {}) }),
           },
         )
       } else {
@@ -1145,6 +1148,12 @@ export default async function (app: FastifyInstance) {
           }
         }
 
+        // Extrai texto da mensagem citada quando é um reply
+        const quotedText: string | undefined =
+          typeof msg.content === 'object' && msg.content !== null
+            ? ((msg.content as any)?.contextInfo?.quotedMessage?.conversation ?? undefined)
+            : undefined
+
         // Processa inline (sem BullMQ) — fire-and-forget para não bloquear o webhook
         processUazapiMessage({
           channelId: channel.id,
@@ -1161,6 +1170,8 @@ export default async function (app: FastifyInstance) {
           senderName: msg.senderName ?? '',
           messageTimestamp: msg.messageTimestamp ?? Date.now(),
           chatImage: body.chat?.image,
+          quoted: msg.quoted || undefined,
+          quotedText,
         }).catch(err =>
           log.error(`[Webhook] Erro ao processar mensagem ${msg.id}: ${err}`),
         )

@@ -20,7 +20,7 @@ async function saveAvatarIfAvailable(contactId: string, chatImage?: string): Pro
 
 /** Processa uma mensagem UAZAPI — chamada diretamente do webhook (sem BullMQ). */
 export async function processUazapiMessage(data: MessageJobData): Promise<void> {
-    const { channelId, organizationId, chatId, fromMe, messageId, type, mediaType, messageType, text, senderName, messageTimestamp, chatImage } = data
+    const { channelId, organizationId, chatId, fromMe, messageId, type, mediaType, messageType, text, senderName, messageTimestamp, chatImage, quoted, quotedText } = data
 
     log.info(`📨 Processando mensagem - chatId: ${chatId}, fromMe: ${fromMe}, type: ${type}, mediaType: ${mediaType}, messageId: ${messageId}`)
 
@@ -87,9 +87,12 @@ export async function processUazapiMessage(data: MessageJobData): Promise<void> 
             })
             if (!contact) throw new Error(`Contato não encontrado após race condition: ${chatId}`)
         }
-    } else if (!fromMe && senderName && senderName !== contact.name) {
-        await prisma.contact.update({ where: { id: contact.id }, data: { name: senderName } })
-        contact = { ...contact, name: senderName }
+    } else {
+        if (!fromMe && senderName && senderName !== contact.name) {
+            await prisma.contact.update({ where: { id: contact.id }, data: { name: senderName } })
+            contact = { ...contact, name: senderName }
+        }
+        void saveAvatarIfAvailable(contact.id, chatImage)
     }
 
     // Evita duplicata (webhook pode reenviar)
@@ -109,8 +112,10 @@ export async function processUazapiMessage(data: MessageJobData): Promise<void> 
             direction,
             type:       msgType,
             content,
-            status:     'sent',
-            externalId: messageId,
+            status:          'sent',
+            externalId:      messageId,
+            quotedExternalId: quoted ?? null,
+            quotedText:       quotedText ?? null,
             createdAt,
         },
     })
@@ -125,12 +130,14 @@ export async function processUazapiMessage(data: MessageJobData): Promise<void> 
         contactName:      contact.name,
         contactAvatarUrl: contact.avatarUrl,
         message: {
-            id:        savedMsg.id,
-            direction: direction as 'outbound' | 'inbound',
-            type:      msgType,
+            id:           savedMsg.id,
+            direction:    direction as 'outbound' | 'inbound',
+            type:         msgType,
             content,
-            status:    'sent',
-            createdAt: savedMsg.createdAt.toISOString(),
+            status:       'sent',
+            createdAt:    savedMsg.createdAt.toISOString(),
+            externalId:   messageId ?? null,
+            ...(quoted && quotedText ? { quotedMessage: { text: quotedText } } : {}),
         },
         ...(isNewContact ? {
             contact: {
