@@ -758,7 +758,7 @@ export default async function (app: FastifyInstance) {
               properties: {
                 mediatype: {
                   type: 'string',
-                  enum: ['image', 'video', 'audio', 'document'],
+                  enum: ['image', 'video', 'audio', 'document', 'ptt'],
                 },
                 fileName: { type: 'string' },
                 media: { type: 'string' }, // base64 sem prefixo data:
