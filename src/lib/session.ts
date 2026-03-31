@@ -10,6 +10,10 @@ declare module 'fastify' {
         session: Session
         organizationId?: string
     }
+    interface FastifySchema {
+        tags?: string[]
+        summary?: string
+    }
 }
 
 export async function requireAuth(request: FastifyRequest, reply: FastifyReply) {
