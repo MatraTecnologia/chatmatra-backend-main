@@ -1148,11 +1148,21 @@ export default async function (app: FastifyInstance) {
           }
         }
 
-        // Extrai texto da mensagem citada quando é um reply
-        const quotedText: string | undefined =
-          typeof msg.content === 'object' && msg.content !== null
-            ? ((msg.content as any)?.contextInfo?.quotedMessage?.conversation ?? undefined)
-            : undefined
+        // Extrai texto/label da mensagem citada quando é um reply
+        let quotedText: string | undefined
+        if (typeof msg.content === 'object' && msg.content !== null) {
+          const qm = (msg.content as any)?.contextInfo?.quotedMessage
+          if (qm) {
+            if (qm.conversation)                          quotedText = qm.conversation
+            else if (qm.extendedTextMessage?.text)        quotedText = qm.extendedTextMessage.text
+            else if (qm.imageMessage)                     quotedText = qm.imageMessage.caption || '[Imagem]'
+            else if (qm.videoMessage)                     quotedText = qm.videoMessage.caption || '[Vídeo]'
+            else if (qm.audioMessage || qm.pttMessage)    quotedText = '[Áudio]'
+            else if (qm.documentMessage)                  quotedText = qm.documentMessage.fileName || '[Documento]'
+            else if (qm.stickerMessage)                   quotedText = '[Figurinha]'
+            else                                          quotedText = '[Mídia]'
+          }
+        }
 
         // Processa inline (sem BullMQ) — fire-and-forget para não bloquear o webhook
         processUazapiMessage({
