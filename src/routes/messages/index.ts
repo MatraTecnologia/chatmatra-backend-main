@@ -127,7 +127,7 @@ export default async function (app: FastifyInstance) {
                     channelId:  { type: 'string' },
                     direction:  { type: 'string', enum: ['outbound', 'inbound'] },
                     type:       { type: 'string', enum: ['text', 'note', 'image', 'audio', 'video', 'document', 'sticker'] },
-                    content:    { type: 'string', minLength: 1 },
+                    content:    { type: 'string' },
                     status:     { type: 'string' },
                     externalId:       { type: 'string' },
                     quotedExternalId: { type: 'string' },
