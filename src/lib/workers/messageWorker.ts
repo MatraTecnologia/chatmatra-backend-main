@@ -137,7 +137,7 @@ export async function processUazapiMessage(data: MessageJobData): Promise<void> 
             status:       'sent',
             createdAt:    savedMsg.createdAt.toISOString(),
             externalId:   messageId ?? null,
-            ...(quoted && quotedText ? { quotedMessage: { text: quotedText } } : {}),
+            ...(quoted && quotedText ? { quotedMessage: { text: quotedText, quotedExternalId: quoted } } : {}),
         },
         ...(isNewContact ? {
             contact: {

@@ -77,7 +77,7 @@ export default async function (app: FastifyInstance) {
             // Inverte para exibição cronológica (mais antigas no topo)
             const messages = rows.reverse().map(m => ({
                 ...m,
-                quotedMessage: m.quotedText ? { text: m.quotedText } : null,
+                quotedMessage: m.quotedText ? { text: m.quotedText, quotedExternalId: m.quotedExternalId } : null,
             }))
             return { hasMore: rows.length === limit, messages }
         }
@@ -108,7 +108,7 @@ export default async function (app: FastifyInstance) {
 
         const messages2 = messages.map(m => ({
             ...m,
-            quotedMessage: (m as any).quotedText ? { text: (m as any).quotedText } : null,
+            quotedMessage: (m as any).quotedText ? { text: (m as any).quotedText, quotedExternalId: (m as any).quotedExternalId } : null,
         }))
         return { total, page, limit, messages: messages2 }
     })
@@ -207,7 +207,7 @@ export default async function (app: FastifyInstance) {
                     createdAt:  message.createdAt.toISOString(),
                     externalId: body.externalId ?? null,
                     user:       sender ?? null,
-                    ...(body.quotedText ? { quotedMessage: { text: body.quotedText } } : {}),
+                    ...(body.quotedText ? { quotedMessage: { text: body.quotedText, quotedExternalId: body.quotedExternalId } } : {}),
                 },
             })
         }
