@@ -112,18 +112,22 @@ export default async function (app: FastifyInstance) {
                     teamId:      { type: 'string' },
                     mine:        { type: 'boolean' },
                     hasMessages: { type: 'boolean' },
+                    dateFrom:    { type: 'string' },
+                    dateTo:      { type: 'string' },
                     page:        { type: 'integer', minimum: 1, default: 1 },
                     limit:       { type: 'integer', minimum: 1, maximum: 500, default: 30 },
                 },
             },
         },
     }, async (request, reply) => {
-        const { search, tagId, teamId, mine, hasMessages, page = 1, limit = 30 } = request.query as {
+        const { search, tagId, teamId, mine, hasMessages, dateFrom, dateTo, page = 1, limit = 30 } = request.query as {
             search?: string
             tagId?: string
             teamId?: string
             mine?: boolean
             hasMessages?: boolean
+            dateFrom?: string
+            dateTo?: string
             page?: number
             limit?: number
         }
@@ -160,6 +164,12 @@ export default async function (app: FastifyInstance) {
             ...(teamId ? { teamId } : {}),
             ...(hasMessages ? { messages: { some: {} } } : {}),
             ...(tagId ? { tags: { some: { tagId } } } : {}),
+            ...(dateFrom || dateTo ? {
+                updatedAt: {
+                    ...(dateFrom ? { gte: new Date(dateFrom) } : {}),
+                    ...(dateTo ? { lte: new Date(dateTo) } : {}),
+                },
+            } : {}),
             ...(search
                 ? {
                     OR: [

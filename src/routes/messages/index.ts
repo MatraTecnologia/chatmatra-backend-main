@@ -23,6 +23,7 @@ export default async function (app: FastifyInstance) {
                     page:      { type: 'integer', minimum: 1 },
                     limit:     { type: 'integer', minimum: 1, maximum: 200, default: 50 },
                     before:    { type: 'string' },
+                    after:     { type: 'string' },
                 },
             },
         },
@@ -32,11 +33,12 @@ export default async function (app: FastifyInstance) {
             return reply.status(400).send({ error: 'Nenhuma organização detectada para este domínio.' })
         }
 
-        const { contactId, page, limit = 50, before } = request.query as {
+        const { contactId, page, limit = 50, before, after } = request.query as {
             contactId: string
             page?: number
             limit?: number
             before?: string
+            after?: string
         }
         const userId = request.session.user.id
 
@@ -45,10 +47,14 @@ export default async function (app: FastifyInstance) {
 
         // Modo cursor: sem page explícito → retorna as mais recentes (ou anteriores a 'before')
         if (page === undefined) {
+            const createdAtFilter = {
+                ...(before ? { lt: new Date(before) } : {}),
+                ...(after ? { gte: new Date(after) } : {}),
+            }
             const where = {
                 contactId,
                 organizationId: orgId,
-                ...(before ? { createdAt: { lt: new Date(before) } } : {}),
+                ...(Object.keys(createdAtFilter).length > 0 ? { createdAt: createdAtFilter } : {}),
             }
             const rows = await prisma.message.findMany({
                 where,
