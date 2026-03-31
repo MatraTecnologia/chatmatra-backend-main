@@ -536,9 +536,11 @@ export default async function (app: FastifyInstance) {
         const isMember = await prisma.member.findFirst({ where: { organizationId: orgId, userId } })
         if (!isMember) return reply.status(403).send({ error: 'Sem permissão.' })
 
-        if (body.phone) {
+        const normalizedPhone = body.phone?.replace(/[\s\-\(\)\.]/g, '') || undefined
+
+        if (normalizedPhone) {
             const existing = await prisma.contact.findFirst({
-                where: { organizationId: orgId, phone: body.phone },
+                where: { organizationId: orgId, phone: normalizedPhone },
             })
             if (existing) return reply.status(409).send({ error: 'Já existe um contato com este telefone.' })
         }
@@ -547,7 +549,7 @@ export default async function (app: FastifyInstance) {
             data: {
                 organizationId: orgId,
                 name:       body.name,
-                phone:      body.phone,
+                phone:      normalizedPhone,
                 email:      body.email,
                 avatarUrl:  body.avatarUrl,
                 channelId:  body.channelId,
