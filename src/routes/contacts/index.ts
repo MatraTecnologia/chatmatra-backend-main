@@ -536,6 +536,13 @@ export default async function (app: FastifyInstance) {
         const isMember = await prisma.member.findFirst({ where: { organizationId: orgId, userId } })
         if (!isMember) return reply.status(403).send({ error: 'Sem permissão.' })
 
+        if (body.phone) {
+            const existing = await prisma.contact.findFirst({
+                where: { organizationId: orgId, phone: body.phone },
+            })
+            if (existing) return reply.status(409).send({ error: 'Já existe um contato com este telefone.' })
+        }
+
         const contact = await prisma.contact.create({
             data: {
                 organizationId: orgId,
