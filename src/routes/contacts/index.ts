@@ -233,28 +233,38 @@ export default async function (app: FastifyInstance) {
             : []
         const readMap = new Map(readStatuses.map((rs) => [rs.contactId, rs]))
 
-        const enrichedContacts = await Promise.all(contacts.map(async (c: { id: string }) => {
+        const unreadCountsRaw = contactIds.length > 0
+            ? await prisma.$queryRawUnsafe<Array<{ contactId: string; count: bigint }>>(
+                `SELECT m."contactId", COUNT(*)::bigint as count
+                 FROM messages m
+                 WHERE m."contactId" = ANY($1)
+                   AND m.direction = 'inbound'
+                   AND (
+                     NOT EXISTS (
+                       SELECT 1 FROM contact_read_statuses crs
+                       WHERE crs."contactId" = m."contactId" AND crs."userId" = $2
+                     )
+                     OR
+                     m."createdAt" > (
+                       SELECT crs."lastReadAt" FROM contact_read_statuses crs
+                       WHERE crs."contactId" = m."contactId" AND crs."userId" = $2
+                     )
+                   )
+                 GROUP BY m."contactId"`,
+                contactIds,
+                userId,
+            )
+            : []
+
+        const unreadCountMap = new Map(unreadCountsRaw.map((r) => [r.contactId, Number(r.count)]))
+
+        const enrichedContacts = contacts.map((c: { id: string }) => {
             const rs = readMap.get(c.id)
-
-            if (!rs) {
-                const count = await prisma.message.count({
-                    where: { contactId: c.id, direction: 'inbound' },
-                })
-                return { ...c, isUnread: count > 0, unreadCount: count }
-            }
-
-            if (rs.markedUnreadAt) {
-                const count = await prisma.message.count({
-                    where: { contactId: c.id, direction: 'inbound', createdAt: { gt: rs.lastReadAt } },
-                })
-                return { ...c, isUnread: true, unreadCount: Math.max(count, 1) }
-            }
-
-            const count = await prisma.message.count({
-                where: { contactId: c.id, direction: 'inbound', createdAt: { gt: rs.lastReadAt } },
-            })
-            return { ...c, isUnread: count > 0, unreadCount: count }
-        }))
+            const count = unreadCountMap.get(c.id) ?? 0
+            const isUnread = (rs?.markedUnreadAt != null) || count > 0
+            const unreadCount = rs?.markedUnreadAt ? Math.max(count, 1) : count
+            return { ...c, isUnread, unreadCount }
+        })
 
         return { total, page, limit, contacts: enrichedContacts }
     })
@@ -276,48 +286,42 @@ export default async function (app: FastifyInstance) {
 
         const isAdminOrOwner = isMember.role === 'admin' || isMember.role === 'owner'
 
-        const contactWhere = {
-            organizationId: orgId,
-            channelId: { not: null as unknown as undefined },
-            ...(!isAdminOrOwner ? {
-                OR: [
-                    { assignedToId: userId },
-                    { assignedToId: null },
-                ],
-            } : {}),
-        }
+        const permissionFilter = isAdminOrOwner
+            ? ''
+            : `AND (c."assignedToId" = $2 OR c."assignedToId" IS NULL)`
 
-        const contactsWithInbound = await prisma.contact.findMany({
-            where: {
-                ...contactWhere,
-                messages: { some: { direction: 'inbound' } },
-            },
-            select: { id: true },
-        })
+        const result = await prisma.$queryRawUnsafe<Array<{ count: bigint }>>(
+            `SELECT COUNT(DISTINCT c.id)::bigint as count
+             FROM contacts c
+             WHERE c."organizationId" = $1
+               AND c."channelId" IS NOT NULL
+               ${permissionFilter}
+               AND (
+                 EXISTS (
+                   SELECT 1 FROM contact_read_statuses crs
+                   WHERE crs."contactId" = c.id AND crs."userId" = $2 AND crs."markedUnreadAt" IS NOT NULL
+                 )
+                 OR
+                 EXISTS (
+                   SELECT 1 FROM messages m
+                   WHERE m."contactId" = c.id AND m.direction = 'inbound'
+                   AND (
+                     NOT EXISTS (
+                       SELECT 1 FROM contact_read_statuses crs2
+                       WHERE crs2."contactId" = c.id AND crs2."userId" = $2
+                     )
+                     OR m."createdAt" > (
+                       SELECT crs3."lastReadAt" FROM contact_read_statuses crs3
+                       WHERE crs3."contactId" = c.id AND crs3."userId" = $2
+                     )
+                   )
+                 )
+               )`,
+            orgId,
+            userId,
+        )
 
-        if (contactsWithInbound.length === 0) return { count: 0 }
-
-        const contactIds = contactsWithInbound.map((c) => c.id)
-
-        const readStatuses = await prisma.contactReadStatus.findMany({
-            where: { userId, contactId: { in: contactIds } },
-            select: { contactId: true, lastReadAt: true, markedUnreadAt: true },
-        })
-        const readMap = new Map(readStatuses.map((rs) => [rs.contactId, rs]))
-
-        let unreadCount = 0
-        for (const contactId of contactIds) {
-            const rs = readMap.get(contactId)
-            if (!rs) { unreadCount++; continue }
-            if (rs.markedUnreadAt) { unreadCount++; continue }
-            const hasNew = await prisma.message.count({
-                where: { contactId, direction: 'inbound', createdAt: { gt: rs.lastReadAt } },
-                take: 1,
-            })
-            if (hasNew > 0) unreadCount++
-        }
-
-        return { count: unreadCount }
+        return { count: Number(result[0]?.count ?? 0) }
     })
 
     // GET /contacts/:id — retorna um contato pelo ID
