@@ -24,8 +24,9 @@ model User {
   accounts         Account[]
   members          Member[]
   invitations      Invitation[]
-  assignedContacts Contact[]    @relation("AssignedContacts")
-  sentMessages     Message[]
+  assignedContacts    Contact[]    @relation("AssignedContacts")
+  sentMessages        Message[]
+  contactReadStatuses ContactReadStatus[]
 
   @@map("users")
 }
@@ -106,8 +107,9 @@ model Organization {
   emailTemplatePresets EmailTemplatePreset[]
   assignmentRules AssignmentRule[]
   messageTemplates MessageTemplate[]
-  products         Product[]
-  teams            Team[]
+  products            Product[]
+  teams               Team[]
+  contactReadStatuses ContactReadStatus[]
   // Facebook App credentials (por organização)
   fbAppId     String?
   fbAppSecret String?
@@ -152,6 +154,7 @@ model Contact {
   assignedToId   String?
   teamId         String?  // time responsável (opcional)
   convStatus     String   @default("open")  // 'open' | 'pending' | 'resolved'
+  lastMessageAt  DateTime?
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt
 
@@ -162,6 +165,7 @@ model Contact {
   messages      Message[]
   tags          ContactTag[]
   campaignLeads CampaignLead[]
+  readStatuses  ContactReadStatus[]
 
   @@map("contacts")
 }
@@ -189,6 +193,25 @@ model Message {
   user         User?        @relation(fields: [userId], references: [id], onDelete: SetNull)
 
   @@map("messages")
+}
+
+// --- Read Status (per-agent unread tracking) ---------------------------------
+
+model ContactReadStatus {
+  id             String    @id @default(cuid())
+  contactId      String
+  userId         String
+  lastReadAt     DateTime  @default(now())
+  markedUnreadAt DateTime?
+  organizationId String
+
+  contact      Contact      @relation(fields: [contactId], references: [id], onDelete: Cascade)
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@unique([contactId, userId])
+  @@index([userId, organizationId])
+  @@map("contact_read_statuses")
 }
 
 // ─── Tags ──────────────────────────────────────────────────────────────────────
