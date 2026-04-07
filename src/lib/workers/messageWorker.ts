@@ -234,6 +234,11 @@ export function startMessageWorker() {
                 },
             })
 
+            await prisma.contact.update({
+                where: { id: contact.id },
+                data: { lastMessageAt: savedMsg.createdAt },
+            })
+
             publishToOrg(organizationId, {
                 type: 'new_message',
                 contactId:        contact.id,
@@ -242,6 +247,7 @@ export function startMessageWorker() {
                 externalId:       contact.externalId,
                 contactName:      contact.name,
                 contactAvatarUrl: contact.avatarUrl,
+                lastMessageAt:    savedMsg.createdAt.toISOString(),
                 message: {
                     id:        savedMsg.id,
                     direction: 'inbound',
