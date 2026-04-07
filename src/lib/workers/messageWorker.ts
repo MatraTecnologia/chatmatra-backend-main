@@ -120,6 +120,11 @@ export async function processUazapiMessage(data: MessageJobData): Promise<void> 
         },
     })
 
+    await prisma.contact.update({
+        where: { id: contact.id },
+        data: { lastMessageAt: savedMsg.createdAt },
+    })
+
     // Publica em tempo real para os agentes
     publishToOrg(organizationId, {
         type: 'new_message',
@@ -129,6 +134,7 @@ export async function processUazapiMessage(data: MessageJobData): Promise<void> 
         externalId:       contact.externalId,
         contactName:      contact.name,
         contactAvatarUrl: contact.avatarUrl,
+        lastMessageAt:    savedMsg.createdAt.toISOString(),
         message: {
             id:           savedMsg.id,
             direction:    direction as 'outbound' | 'inbound',

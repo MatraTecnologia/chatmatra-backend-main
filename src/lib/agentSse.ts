@@ -19,6 +19,7 @@ export type AgentEvent =
           contactName?: string | null
           /** URL do avatar do contato — sempre presente para exibir na notificação */
           contactAvatarUrl?: string | null
+          lastMessageAt?: string | null
           message: {
               id: string
               direction: 'outbound' | 'inbound'
@@ -73,6 +74,12 @@ export type AgentEvent =
           userId: string
           userName: string
           isTyping: boolean
+      }
+    | {
+          type: 'conv_read_status'
+          contactId: string
+          userId: string
+          isUnread: boolean
       }
     | {
           type: 'user_online'

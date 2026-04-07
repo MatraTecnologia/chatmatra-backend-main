@@ -178,6 +178,11 @@ export default async function (app: FastifyInstance) {
             },
         })
 
+        await prisma.contact.update({
+            where: { id: body.contactId },
+            data: { lastMessageAt: message.createdAt },
+        })
+
         // Broadcast mensagem em tempo real para todos os agentes da org
         {
             const [contact, sender] = await Promise.all([
@@ -197,6 +202,7 @@ export default async function (app: FastifyInstance) {
                 externalId:       contact?.externalId ?? null,
                 contactName:      contact?.name ?? null,
                 contactAvatarUrl: contact?.avatarUrl ?? null,
+                lastMessageAt:    message.createdAt.toISOString(),
                 message: {
                     id:         message.id,
                     direction:  body.direction,
