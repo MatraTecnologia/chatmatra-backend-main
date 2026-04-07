@@ -185,7 +185,10 @@ export default async function (app: FastifyInstance) {
             prisma.contact.count({ where }),
             prisma.contact.findMany({
                 where,
-                orderBy: { updatedAt: 'desc' },
+                orderBy: [
+                    { lastMessageAt: { sort: 'desc', nulls: 'last' } },
+                    { createdAt: 'desc' },
+                ],
                 skip: (page - 1) * limit,
                 take: limit,
                 select: {
@@ -202,6 +205,7 @@ export default async function (app: FastifyInstance) {
                     teamId: true,
                     createdAt: true,
                     updatedAt: true,
+                    lastMessageAt: true,
                     channel: {
                         select: { id: true, name: true, type: true, status: true },
                     },
@@ -220,7 +224,100 @@ export default async function (app: FastifyInstance) {
             }),
         ])
 
-        return { total, page, limit, contacts }
+        const contactIds = contacts.map((c: { id: string }) => c.id)
+        const readStatuses = contactIds.length > 0
+            ? await prisma.contactReadStatus.findMany({
+                where: { userId, contactId: { in: contactIds } },
+                select: { contactId: true, lastReadAt: true, markedUnreadAt: true },
+            })
+            : []
+        const readMap = new Map(readStatuses.map((rs) => [rs.contactId, rs]))
+
+        const enrichedContacts = await Promise.all(contacts.map(async (c: { id: string }) => {
+            const rs = readMap.get(c.id)
+
+            if (!rs) {
+                const count = await prisma.message.count({
+                    where: { contactId: c.id, direction: 'inbound' },
+                })
+                return { ...c, isUnread: count > 0, unreadCount: count }
+            }
+
+            if (rs.markedUnreadAt) {
+                const count = await prisma.message.count({
+                    where: { contactId: c.id, direction: 'inbound', createdAt: { gt: rs.lastReadAt } },
+                })
+                return { ...c, isUnread: true, unreadCount: Math.max(count, 1) }
+            }
+
+            const count = await prisma.message.count({
+                where: { contactId: c.id, direction: 'inbound', createdAt: { gt: rs.lastReadAt } },
+            })
+            return { ...c, isUnread: count > 0, unreadCount: count }
+        }))
+
+        return { total, page, limit, contacts: enrichedContacts }
+    })
+
+    // GET /contacts/unread-count
+    app.get('/unread-count', {
+        preHandler: requireAuth,
+        schema: {
+            tags: ['Contacts'],
+            summary: 'Total de conversas nao lidas',
+        },
+    }, async (request, reply) => {
+        const orgId = request.organizationId
+        if (!orgId) return reply.status(400).send({ error: 'Nenhuma organizacao detectada.' })
+        const userId = request.session.user.id
+
+        const isMember = await prisma.member.findFirst({ where: { organizationId: orgId, userId } })
+        if (!isMember) return reply.status(403).send({ error: 'Sem permissao.' })
+
+        const isAdminOrOwner = isMember.role === 'admin' || isMember.role === 'owner'
+
+        const contactWhere = {
+            organizationId: orgId,
+            channelId: { not: null as unknown as undefined },
+            ...(!isAdminOrOwner ? {
+                OR: [
+                    { assignedToId: userId },
+                    { assignedToId: null },
+                ],
+            } : {}),
+        }
+
+        const contactsWithInbound = await prisma.contact.findMany({
+            where: {
+                ...contactWhere,
+                messages: { some: { direction: 'inbound' } },
+            },
+            select: { id: true },
+        })
+
+        if (contactsWithInbound.length === 0) return { count: 0 }
+
+        const contactIds = contactsWithInbound.map((c) => c.id)
+
+        const readStatuses = await prisma.contactReadStatus.findMany({
+            where: { userId, contactId: { in: contactIds } },
+            select: { contactId: true, lastReadAt: true, markedUnreadAt: true },
+        })
+        const readMap = new Map(readStatuses.map((rs) => [rs.contactId, rs]))
+
+        let unreadCount = 0
+        for (const contactId of contactIds) {
+            const rs = readMap.get(contactId)
+            if (!rs) { unreadCount++; continue }
+            if (rs.markedUnreadAt) { unreadCount++; continue }
+            const hasNew = await prisma.message.count({
+                where: { contactId, direction: 'inbound', createdAt: { gt: rs.lastReadAt } },
+                take: 1,
+            })
+            if (hasNew > 0) unreadCount++
+        }
+
+        return { count: unreadCount }
     })
 
     // GET /contacts/:id — retorna um contato pelo ID
@@ -846,5 +943,65 @@ export default async function (app: FastifyInstance) {
 
         await prisma.contact.delete({ where: { id } })
         return reply.status(204).send()
+    })
+
+    // POST /contacts/:id/read — marca conversa como lida
+    app.post('/:id/read', {
+        preHandler: requireAuth,
+        schema: {
+            tags: ['Contacts'],
+            summary: 'Marca conversa como lida',
+            params: { type: 'object', properties: { id: { type: 'string' } }, required: ['id'] },
+        },
+    }, async (request, reply) => {
+        const orgId = request.organizationId
+        if (!orgId) return reply.status(400).send({ error: 'Nenhuma organizacao detectada.' })
+        const { id: contactId } = request.params as { id: string }
+        const userId = request.session.user.id
+
+        await prisma.contactReadStatus.upsert({
+            where: { contactId_userId: { contactId, userId } },
+            create: { contactId, userId, organizationId: orgId, lastReadAt: new Date(), markedUnreadAt: null },
+            update: { lastReadAt: new Date(), markedUnreadAt: null },
+        })
+
+        publishToOrg(orgId, {
+            type: 'conv_read_status',
+            contactId,
+            userId,
+            isUnread: false,
+        })
+
+        return { success: true }
+    })
+
+    // POST /contacts/:id/unread — marca conversa como nao lida
+    app.post('/:id/unread', {
+        preHandler: requireAuth,
+        schema: {
+            tags: ['Contacts'],
+            summary: 'Marca conversa como nao lida',
+            params: { type: 'object', properties: { id: { type: 'string' } }, required: ['id'] },
+        },
+    }, async (request, reply) => {
+        const orgId = request.organizationId
+        if (!orgId) return reply.status(400).send({ error: 'Nenhuma organizacao detectada.' })
+        const { id: contactId } = request.params as { id: string }
+        const userId = request.session.user.id
+
+        await prisma.contactReadStatus.upsert({
+            where: { contactId_userId: { contactId, userId } },
+            create: { contactId, userId, organizationId: orgId, markedUnreadAt: new Date() },
+            update: { markedUnreadAt: new Date() },
+        })
+
+        publishToOrg(orgId, {
+            type: 'conv_read_status',
+            contactId,
+            userId,
+            isUnread: true,
+        })
+
+        return { success: true }
     })
 }
