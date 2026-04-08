@@ -226,37 +226,32 @@ export default async function (app: FastifyInstance) {
         ])
 
         const contactIds = contacts.map((c: { id: string }) => c.id)
-        const readStatuses = contactIds.length > 0
-            ? await prisma.contactReadStatus.findMany({
-                where: { userId, contactId: { in: contactIds } },
-                select: { contactId: true, lastReadAt: true, markedUnreadAt: true },
-            })
-            : []
+
+        const [readStatuses, unreadCountsRaw] = contactIds.length > 0
+            ? await Promise.all([
+                prisma.contactReadStatus.findMany({
+                    where: { userId, contactId: { in: contactIds } },
+                    select: { contactId: true, lastReadAt: true, markedUnreadAt: true },
+                }),
+                prisma.$queryRawUnsafe<Array<{ contactId: string; count: bigint }>>(
+                    `SELECT m."contactId", COUNT(*)::bigint as count
+                     FROM messages m
+                     LEFT JOIN contact_read_statuses crs
+                       ON crs."contactId" = m."contactId" AND crs."userId" = $2
+                     WHERE m."contactId" = ANY($1)
+                       AND m.direction = 'inbound'
+                       AND (
+                         crs."contactId" IS NULL
+                         OR m."createdAt" > crs."lastReadAt"
+                       )
+                     GROUP BY m."contactId"`,
+                    contactIds,
+                    userId,
+                ),
+            ])
+            : [[], []]
+
         const readMap = new Map(readStatuses.map((rs) => [rs.contactId, rs]))
-
-        const unreadCountsRaw = contactIds.length > 0
-            ? await prisma.$queryRawUnsafe<Array<{ contactId: string; count: bigint }>>(
-                `SELECT m."contactId", COUNT(*)::bigint as count
-                 FROM messages m
-                 WHERE m."contactId" = ANY($1)
-                   AND m.direction = 'inbound'
-                   AND (
-                     NOT EXISTS (
-                       SELECT 1 FROM contact_read_statuses crs
-                       WHERE crs."contactId" = m."contactId" AND crs."userId" = $2
-                     )
-                     OR
-                     m."createdAt" > (
-                       SELECT crs."lastReadAt" FROM contact_read_statuses crs
-                       WHERE crs."contactId" = m."contactId" AND crs."userId" = $2
-                     )
-                   )
-                 GROUP BY m."contactId"`,
-                contactIds,
-                userId,
-            )
-            : []
-
         const unreadCountMap = new Map(unreadCountsRaw.map((r) => [r.contactId, Number(r.count)]))
 
         const enrichedContacts = contacts.map((c: { id: string }) => {

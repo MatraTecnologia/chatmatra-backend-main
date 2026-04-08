@@ -169,6 +169,8 @@ model Contact {
   readStatuses  ContactReadStatus[]
 
   @@index([organizationId, lastMessageAt])
+  @@index([organizationId, convStatus])
+  @@index([organizationId, assignedToId])
   @@map("contacts")
 }
 
@@ -194,6 +196,9 @@ model Message {
   channel      Channel?     @relation(fields: [channelId], references: [id], onDelete: SetNull)
   user         User?        @relation(fields: [userId], references: [id], onDelete: SetNull)
 
+  @@index([contactId, createdAt])
+  @@index([organizationId, externalId])
+  @@index([contactId, direction, createdAt])
   @@map("messages")
 }
 

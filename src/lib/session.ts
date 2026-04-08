@@ -70,25 +70,19 @@ export async function requireAuth(request: FastifyRequest, reply: FastifyReply) 
         // Remove porta se houver (ex: teste.matratecnologia.com:3000 → teste.matratecnologia.com)
         const domain = hostname.split(':')[0]
 
-        // Busca organização pelo domínio
-        const org = await prisma.organization.findUnique({
-            where: { domain },
-            select: { id: true },
+        const member = await prisma.member.findFirst({
+            where: {
+                userId: session.user.id,
+                organization: { domain },
+            },
+            select: { organizationId: true },
         })
 
-        if (org) {
-            // Verifica se o usuário é membro dessa organização
-            const member = await prisma.member.findUnique({
-                where: { organizationId_userId: { organizationId: org.id, userId: session.user.id } },
-            })
-
-            if (!member) {
-                return reply.status(403).send({ error: 'Acesso negado a esta organização.' })
-            }
-
-            // Injeta organizationId no request para uso nos endpoints
-            request.organizationId = org.id
+        if (!member) {
+            return reply.status(403).send({ error: 'Acesso negado a esta organização.' })
         }
+
+        request.organizationId = member.organizationId
     } else {
 
         // MODO DESENVOLVIMENTO: Em localhost, usa organização específica configurada
