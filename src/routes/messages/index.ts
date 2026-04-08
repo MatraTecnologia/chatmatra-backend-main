@@ -180,7 +180,7 @@ export default async function (app: FastifyInstance) {
 
         await prisma.contact.update({
             where: { id: body.contactId },
-            data: { lastMessageAt: message.createdAt },
+            data: { lastMessageAt: message.createdAt, lastMessageDirection: body.direction },
         })
 
         // Broadcast mensagem em tempo real para todos os agentes da org

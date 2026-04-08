@@ -206,6 +206,7 @@ export default async function (app: FastifyInstance) {
                     createdAt: true,
                     updatedAt: true,
                     lastMessageAt: true,
+                    lastMessageDirection: true,
                     channel: {
                         select: { id: true, name: true, type: true, status: true },
                     },
