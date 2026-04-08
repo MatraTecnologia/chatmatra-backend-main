@@ -107,25 +107,27 @@ export default async function (app: FastifyInstance) {
             querystring: {
                 type: 'object',
                 properties: {
-                    search:      { type: 'string' },
-                    tagId:       { type: 'string' },
-                    teamId:      { type: 'string' },
-                    mine:        { type: 'boolean' },
-                    hasMessages: { type: 'boolean' },
-                    dateFrom:    { type: 'string' },
-                    dateTo:      { type: 'string' },
-                    page:        { type: 'integer', minimum: 1, default: 1 },
-                    limit:       { type: 'integer', minimum: 1, maximum: 500, default: 30 },
+                    search:             { type: 'string' },
+                    tagId:              { type: 'string' },
+                    teamId:             { type: 'string' },
+                    mine:               { type: 'boolean' },
+                    hasMessages:        { type: 'boolean' },
+                    assignedToUserId:   { type: 'string' },
+                    dateFrom:           { type: 'string' },
+                    dateTo:             { type: 'string' },
+                    page:               { type: 'integer', minimum: 1, default: 1 },
+                    limit:              { type: 'integer', minimum: 1, maximum: 500, default: 30 },
                 },
             },
         },
     }, async (request, reply) => {
-        const { search, tagId, teamId, mine, hasMessages, dateFrom, dateTo, page = 1, limit = 30 } = request.query as {
+        const { search, tagId, teamId, mine, hasMessages, assignedToUserId, dateFrom, dateTo, page = 1, limit = 30 } = request.query as {
             search?: string
             tagId?: string
             teamId?: string
             mine?: boolean
             hasMessages?: boolean
+            assignedToUserId?: string
             dateFrom?: string
             dateTo?: string
             page?: number
@@ -160,9 +162,12 @@ export default async function (app: FastifyInstance) {
             } : {}),
             // Filtro "mine": apenas atribuídos ao usuário logado
             ...(mine ? { assignedToId: userId } : {}),
+            // Filtro por usuário específico atribuído
+            ...(assignedToUserId ? { assignedToId: assignedToUserId } : {}),
             // Filtro por time
             ...(teamId ? { teamId } : {}),
-            ...(hasMessages ? { messages: { some: {} } } : {}),
+            // lastMessageAt IS NOT NULL é equivalente a "tem mensagens" e usa o index diretamente
+            ...(hasMessages ? { lastMessageAt: { not: null } } : {}),
             ...(tagId ? { tags: { some: { tagId } } } : {}),
             ...(dateFrom || dateTo ? {
                 updatedAt: {
