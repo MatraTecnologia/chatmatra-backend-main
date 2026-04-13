@@ -910,6 +910,11 @@ export default async function (app: FastifyInstance) {
 
       const cfg = channel.config as UazapiConfig
 
+      // externalId pode ser "owner:messageId" ou apenas "messageId" — UAZAPI espera o ID curto
+      const waMessageId = message.externalId!.includes(':')
+        ? message.externalId!.split(':').pop()!
+        : message.externalId!
+
       const downloadFromUazapi = async () => {
         const result = await uazapiFetch(
           cfg.uazapiUrl,
@@ -917,7 +922,7 @@ export default async function (app: FastifyInstance) {
           { instanceToken: cfg.uazapiInstanceToken },
           {
             method: 'POST',
-            body: JSON.stringify({ id: message.externalId }),
+            body: JSON.stringify({ id: waMessageId }),
           },
         )
         if (!result.ok) return { error: result } as const
