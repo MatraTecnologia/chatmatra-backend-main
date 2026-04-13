@@ -923,7 +923,7 @@ export default async function (app: FastifyInstance) {
 
         if (!result.ok) {
           log.error(`UAZAPI erro ao buscar mídia: Status ${result.status}`)
-          return reply.status(502).send({
+          return reply.status(422).send({
             error: 'Não foi possível obter a mídia do UAZAPI.',
             details: result.data,
           })
@@ -940,7 +940,7 @@ export default async function (app: FastifyInstance) {
               `Erro ao baixar mídia da URL: ${result.data.fileURL} — status ${fileRes.status}`,
             )
             return reply
-              .status(502)
+              .status(422)
               .send({ error: 'Erro ao baixar mídia do UAZAPI.' })
           }
 
@@ -965,14 +965,14 @@ export default async function (app: FastifyInstance) {
 
         log.error('UAZAPI retornou sem fileURL nem base64')
         return reply
-          .status(502)
+          .status(422)
           .send({ error: 'Mídia não disponível no UAZAPI.' })
       } catch (error) {
         log.error(
           `Erro ao buscar mídia: ${error instanceof Error ? error.message : error}`,
         )
         return reply
-          .status(502)
+          .status(422)
           .send({ error: 'Erro ao comunicar com UAZAPI.' })
       }
     },
