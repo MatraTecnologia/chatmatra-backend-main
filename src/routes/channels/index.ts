@@ -1,6 +1,7 @@
 import { type Prisma } from '@prisma/client'
 import crypto from 'crypto'
 import type { FastifyInstance } from 'fastify'
+import { Readable } from 'node:stream'
 import { log } from '../../lib/logger.js'
 import { prisma } from '../../lib/prisma.js'
 import {
@@ -931,10 +932,10 @@ export default async function (app: FastifyInstance) {
         const mimeType =
           (result.data.mimetype as string) ?? 'application/octet-stream'
 
-        // UAZAPI retorna fileURL — baixa e converte para base64
+        // UAZAPI retorna fileURL — faz stream direto para o client
         if (result.data?.fileURL) {
           const fileRes = await fetch(result.data.fileURL as string)
-          if (!fileRes.ok) {
+          if (!fileRes.ok || !fileRes.body) {
             log.error(
               `Erro ao baixar mídia da URL: ${result.data.fileURL} — status ${fileRes.status}`,
             )
@@ -942,21 +943,24 @@ export default async function (app: FastifyInstance) {
               .status(502)
               .send({ error: 'Erro ao baixar mídia do UAZAPI.' })
           }
-          const buffer = Buffer.from(await fileRes.arrayBuffer())
-          return {
-            base64: buffer.toString('base64'),
-            mediaType: message.type,
-            mimeType,
-          }
-        }
 
-        // Fallback: base64 direto (caso futuro)
-        if (result.data?.base64) {
-          return {
-            base64: result.data.base64 as string,
-            mediaType: message.type,
-            mimeType,
+          const disposition =
+            message.type === 'document' ? 'attachment' : 'inline'
+
+          reply.header('Content-Type', mimeType)
+          reply.header('Content-Disposition', disposition)
+          reply.header('Cache-Control', 'private, max-age=3600')
+
+          if (fileRes.headers.get('content-length')) {
+            reply.header(
+              'Content-Length',
+              fileRes.headers.get('content-length')!,
+            )
           }
+
+          return reply.send(
+            Readable.fromWeb(fileRes.body as import('stream/web').ReadableStream),
+          )
         }
 
         log.error('UAZAPI retornou sem fileURL nem base64')
