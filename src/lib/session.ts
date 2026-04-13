@@ -45,6 +45,19 @@ export async function requireAuth(request: FastifyRequest, reply: FastifyReply) 
         }
     }
 
+    // Prioridade 1.5: Referer header (usado quando Origin está ausente, ex: <img>, <audio>, <video>)
+    if (!hostname) {
+        const referer = request.headers['referer']
+        if (referer) {
+            try {
+                const url = new URL(referer)
+                hostname = url.hostname
+            } catch {
+                // Ignora erro de parsing
+            }
+        }
+    }
+
     // Prioridade 2: x-forwarded-host (proxy)
     if (!hostname) {
         hostname = request.headers['x-forwarded-host'] as string | undefined
