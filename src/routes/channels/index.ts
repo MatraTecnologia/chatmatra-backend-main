@@ -910,7 +910,7 @@ export default async function (app: FastifyInstance) {
 
       const cfg = channel.config as UazapiConfig
 
-      try {
+      const downloadFromUazapi = async () => {
         const result = await uazapiFetch(
           cfg.uazapiUrl,
           '/message/download',
@@ -920,53 +920,51 @@ export default async function (app: FastifyInstance) {
             body: JSON.stringify({ id: message.externalId }),
           },
         )
+        if (!result.ok) return { error: result } as const
+        if (!result.data?.fileURL) return { error: result } as const
+        const fileRes = await fetch(result.data.fileURL as string)
+        if (!fileRes.ok || !fileRes.body) return { error: result, fileStatus: fileRes.status } as const
+        return {
+          fileRes,
+          mimeType: (result.data.mimetype as string) ?? 'application/octet-stream',
+        } as const
+      }
 
-        if (!result.ok) {
-          log.error(`UAZAPI erro ao buscar mídia: Status ${result.status}`)
+      try {
+        let dl = await downloadFromUazapi()
+
+        // Mídia expirada no storage do UAZAPI (>2 dias) — retry força re-download do CDN da Meta
+        if ('error' in dl) {
+          log.info('Mídia expirada ou indisponível, tentando re-download via UAZAPI...')
+          dl = await downloadFromUazapi()
+        }
+
+        if ('error' in dl) {
+          const r = dl.error
+          log.error(`UAZAPI erro ao buscar mídia: Status ${r.status}`)
           return reply.status(422).send({
             error: 'Não foi possível obter a mídia do UAZAPI.',
-            details: result.data,
+            details: r.data,
           })
         }
 
-        const mimeType =
-          (result.data.mimetype as string) ?? 'application/octet-stream'
+        const disposition =
+          message.type === 'document' ? 'attachment' : 'inline'
 
-        // UAZAPI retorna fileURL — faz stream direto para o client
-        if (result.data?.fileURL) {
-          const fileRes = await fetch(result.data.fileURL as string)
-          if (!fileRes.ok || !fileRes.body) {
-            log.error(
-              `Erro ao baixar mídia da URL: ${result.data.fileURL} — status ${fileRes.status}`,
-            )
-            return reply
-              .status(422)
-              .send({ error: 'Erro ao baixar mídia do UAZAPI.' })
-          }
+        reply.header('Content-Type', dl.mimeType)
+        reply.header('Content-Disposition', disposition)
+        reply.header('Cache-Control', 'private, max-age=3600')
 
-          const disposition =
-            message.type === 'document' ? 'attachment' : 'inline'
-
-          reply.header('Content-Type', mimeType)
-          reply.header('Content-Disposition', disposition)
-          reply.header('Cache-Control', 'private, max-age=3600')
-
-          if (fileRes.headers.get('content-length')) {
-            reply.header(
-              'Content-Length',
-              fileRes.headers.get('content-length')!,
-            )
-          }
-
-          return reply.send(
-            Readable.fromWeb(fileRes.body as import('stream/web').ReadableStream),
+        if (dl.fileRes.headers.get('content-length')) {
+          reply.header(
+            'Content-Length',
+            dl.fileRes.headers.get('content-length')!,
           )
         }
 
-        log.error('UAZAPI retornou sem fileURL nem base64')
-        return reply
-          .status(422)
-          .send({ error: 'Mídia não disponível no UAZAPI.' })
+        return reply.send(
+          Readable.fromWeb(dl.fileRes.body as import('stream/web').ReadableStream),
+        )
       } catch (error) {
         log.error(
           `Erro ao buscar mídia: ${error instanceof Error ? error.message : error}`,
