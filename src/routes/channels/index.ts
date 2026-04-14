@@ -763,8 +763,9 @@ export default async function (app: FastifyInstance) {
                   enum: ['image', 'video', 'audio', 'document', 'ptt'],
                 },
                 fileName: { type: 'string' },
-                media: { type: 'string' }, // base64 sem prefixo data:
+                media: { type: 'string' },
                 caption: { type: 'string' },
+                mimetype: { type: 'string' },
               },
               required: ['mediatype', 'media'],
             },
@@ -784,6 +785,7 @@ export default async function (app: FastifyInstance) {
           fileName?: string
           media: string
           caption?: string
+          mimetype?: string
         }
       }
       const userId = request.session.user.id
@@ -812,7 +814,11 @@ export default async function (app: FastifyInstance) {
       let result
 
       if (mediaMessage) {
-        // Envia mídia
+        const isUrl = mediaMessage.media.startsWith('http://') || mediaMessage.media.startsWith('https://')
+        const file = isUrl
+          ? mediaMessage.media
+          : `data:${mediaMessage.mimetype || 'application/octet-stream'};base64,${mediaMessage.media}`
+
         result = await uazapiFetch(
           cfg.uazapiUrl,
           '/send/media',
@@ -822,9 +828,10 @@ export default async function (app: FastifyInstance) {
             body: JSON.stringify({
               number: cleanNumber,
               type: mediaMessage.mediatype,
-              file: mediaMessage.media,
+              file,
               text: mediaMessage.caption,
               docName: mediaMessage.fileName,
+              ...(mediaMessage.mimetype ? { mimetype: mediaMessage.mimetype } : {}),
               ...(replyid ? { replyid } : {}),
             }),
           },
