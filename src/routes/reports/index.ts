@@ -200,6 +200,151 @@ export default async function (app: FastifyInstance) {
         }
     })
 
+    // ── GET /reports/agent-detail?agentId=&startDate=&endDate= ───────────
+    // Relatório detalhado de agente específico por período customizado
+    app.get('/agent-detail', {
+        preHandler: requireAuth,
+        schema: {
+            tags: ['Reports'],
+            summary: 'Relatório detalhado de agente por período customizado',
+            querystring: {
+                type: 'object',
+                required: ['agentId', 'startDate', 'endDate'],
+                properties: {
+                    agentId: { type: 'string' },
+                    startDate: { type: 'string' },
+                    endDate: { type: 'string' },
+                },
+            },
+        },
+    }, async (request, reply) => {
+        const orgId = request.organizationId
+        if (!orgId) {
+            return reply.status(400).send({ error: 'Nenhuma organização detectada para este domínio.' })
+        }
+
+        const { agentId, startDate, endDate } = request.query as {
+            agentId: string
+            startDate: string
+            endDate: string
+        }
+
+        const start = new Date(startDate)
+        start.setHours(0, 0, 0, 0)
+        const end = new Date(endDate)
+        end.setHours(23, 59, 59, 999)
+
+        const member = await prisma.member.findFirst({
+            where: { organizationId: orgId, userId: agentId },
+            include: { user: true },
+        })
+
+        if (!member) {
+            return reply.status(404).send({ error: 'Agente não encontrado nesta organização.' })
+        }
+
+        const [messagesSent, messagesReceived, contactsHandled, contactsResolved, activeConversations] =
+            await Promise.all([
+                prisma.message.count({
+                    where: {
+                        organizationId: orgId,
+                        direction: 'outbound',
+                        type: 'text',
+                        createdAt: { gte: start, lte: end },
+                        contact: { assignedToId: agentId },
+                    },
+                }),
+                prisma.message.count({
+                    where: {
+                        organizationId: orgId,
+                        direction: 'inbound',
+                        createdAt: { gte: start, lte: end },
+                        contact: { assignedToId: agentId },
+                    },
+                }),
+                prisma.contact.count({
+                    where: {
+                        organizationId: orgId,
+                        assignedToId: agentId,
+                        messages: { some: { createdAt: { gte: start, lte: end } } },
+                    },
+                }),
+                prisma.contact.count({
+                    where: {
+                        organizationId: orgId,
+                        assignedToId: agentId,
+                        convStatus: 'resolved',
+                        updatedAt: { gte: start, lte: end },
+                    },
+                }),
+                prisma.contact.count({
+                    where: {
+                        organizationId: orgId,
+                        assignedToId: agentId,
+                        convStatus: { in: ['open', 'pending'] },
+                    },
+                }),
+            ])
+
+        const timelineRows = await prisma.$queryRaw<Array<{ day: Date; sent: bigint; received: bigint }>>`
+            SELECT
+                DATE_TRUNC('day', m."createdAt") AS day,
+                COUNT(*) FILTER (WHERE m.direction = 'outbound' AND m.type = 'text') AS sent,
+                COUNT(*) FILTER (WHERE m.direction = 'inbound')                      AS received
+            FROM messages m
+            INNER JOIN contacts c ON c.id = m."contactId"
+            WHERE m."organizationId" = ${orgId}
+              AND c."assignedToId" = ${agentId}
+              AND m."createdAt" >= ${start}
+              AND m."createdAt" <= ${end}
+            GROUP BY 1
+            ORDER BY 1 ASC
+        `
+
+        const contacts = await prisma.contact.findMany({
+            where: {
+                organizationId: orgId,
+                assignedToId: agentId,
+                messages: { some: { createdAt: { gte: start, lte: end } } },
+            },
+            select: {
+                id: true,
+                name: true,
+                phone: true,
+                convStatus: true,
+                lastMessageAt: true,
+                _count: { select: { messages: true } },
+            },
+            orderBy: { lastMessageAt: 'desc' },
+            take: 100,
+        })
+
+        return {
+            agent: {
+                userId: member.userId,
+                name: member.user.name,
+                email: member.user.email,
+                image: member.user.image ?? null,
+                role: member.role,
+            },
+            period: { start: start.toISOString(), end: end.toISOString() },
+            metrics: { messagesSent, messagesReceived, contactsHandled, contactsResolved, activeConversations },
+            timeline: timelineRows.map((r) => ({
+                day: r.day.toISOString().slice(0, 10),
+                sent: Number(r.sent),
+                received: Number(r.received),
+            })),
+            contacts: contacts.map((c) => ({
+                id: c.id,
+                name: c.name,
+                phone: c.phone,
+                convStatus: c.convStatus,
+                lastMessageAt: c.lastMessageAt?.toISOString() ?? null,
+                messageCount: c._count.messages,
+            })),
+        }
+    })
+
     // ── GET /reports/channels?period= ─────────────────────────────────────
     // Mensagens por canal no período
     app.get('/channels', {
